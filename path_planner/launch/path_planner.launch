@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+
+<launch>
+
+  
+  <arg name="filename_map" value="$(find path_planner)/config/bastide_map.mat" />
+
+  <node pkg="path_planner" type="path_planner.py" name="path_planner" output="screen">
+
+    <!-- Problem variations -->
+    <param name="use_energy_costs" type="bool" value="false"/>
+    <param name="show_connectivity" type="bool" value="false"/>
+
+    <!-- Graph construction parameters-->    
+    <param name="use_prm" type="bool" value="false"/>
+    <param name="grid_step_size" type="int" value="20"/>
+    <param name="prm_num_nodes" type="int" value="150"/>   
+    <param name="prm_max_edge_length" type="int" value="100"/>
+    
+    <!-- A* search parameter -->
+    <param name="use_naive_planner" type="bool" value="false"/>
+    <param name="heuristic_weight" type="double" value="4.0"/>
+
+    <!-- Smoothing parameters -->
+    <param name="alpha" type="double" value="0.3"/>
+    <param name="beta" type="double" value="0.5"/> 
+
+
+
+
+    <!-- Map parameters -->
+    <param name="filename" type="string" value="$(arg filename_map)"/>
+    <param name="map_resolution" type="double" value="0.00765"/> <!-- for the Bastide map -->
+
+    <!-- Initial start position and goal position. Subsequent goals set as rviz Publish Point clicks. -->    
+    <!-- Good for Mars environment -->
+    <param name="startx" type="double" value="220"/>
+    <param name="starty" type="double" value="770"/>
+    <param name="goalx" type="double" value="520"/>
+    <param name="goaly" type="double" value="600"/>
+
+  </node>
+
+  <node pkg="rviz" type="rviz" name="rviz" required="true" args="-d $(find path_planner)/launch/planner_conf.rviz" />
+
+</launch>

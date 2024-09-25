@@ -1,0 +1,317 @@
+material mars/wall01
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall01.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall02
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall02.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall03
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall03.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall04
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall04.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall05
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall05.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall06
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall06.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall07
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall07.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall08
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall08.png
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall09
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall09.png
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall10
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall10.png
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall11
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall11.png
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall12
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall12.png
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/wall13
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture wall13.png
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+material mars/stop_sign
+{
+	technique
+	{
+		pass
+		{
+			ambient 0.5 0.5 0.5 1.0
+			diffuse 0.5 0.5 0.5 1.0
+			specular 0.2 0.2 0.2 1.0 12.5
+
+			texture_unit
+			{
+				texture stop_sign.jpg
+				filtering anistropic
+				max_anisotropy 16
+				scale 1.0 1.0
+				rotate 90
+			}
+		}
+	}
+}
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,8 @@
+prefix=/usr/local
+
+Name: path_planner
+Description: Description of path_planner
+Version: 0.0.1
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

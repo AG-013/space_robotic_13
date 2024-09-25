@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/adesh/catkin_ws/src/path_planner/build/devel/setup.sh
