@@ -14,15 +14,15 @@
     <!-- Graph construction parameters-->    
     <param name="use_prm" type="bool" value="false"/>
     <param name="grid_step_size" type="int" value="20"/>
-    <param name="prm_num_nodes" type="int" value="150"/>   
+    <param name="prm_num_nodes" type="int" value="400"/>   
     <param name="prm_max_edge_length" type="int" value="100"/>
     
     <!-- A* search parameter -->
-    <param name="use_naive_planner" type="bool" value="false"/>
-    <param name="heuristic_weight" type="double" value="4.0"/>
+    <param name="use_naive_planner" type="bool" value="true"/>
+    <param name="heuristic_weight" type="double" value="1.0"/>
 
     <!-- Smoothing parameters -->
-    <param name="alpha" type="double" value="0.3"/>
+    <param name="alpha" type="double" value="0.1"/>
     <param name="beta" type="double" value="0.5"/> 
 
 
