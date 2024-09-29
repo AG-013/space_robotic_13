@@ -134,6 +134,9 @@ class CaveExplorer:
         # see http://wiki.ros.org/cv_bridge/Tutorials/ConvertingBetweenROSImagesAndOpenCVImagesPython
         image = self.cv_bridge_.imgmsg_to_cv2(image_msg, desired_encoding='passthrough')
 
+        # On my system, this image above is read only so I need to overwrite it with a copy before I can draw on it.
+        image = np.copy(image)
+
         # Create a grayscale version, since the simple model below uses this
         image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
