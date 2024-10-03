@@ -101,6 +101,11 @@ class CaveExplorer:
 
         # Subscribe to the map topic
         self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
+        self.current_map_ = None
+    
+        #Subscriber of the pose
+        self.pose_sub = rospy.Subscriber("/acml_pose", PoseWithCovarianceStamped, self.pose_callback, queue_size=1)
+        self.current_pose_ = None
 
     def get_pose_2d(self):
 
@@ -297,32 +302,107 @@ class CaveExplorer:
             self.move_base_action_client_.send_goal(action_goal.goal)
     def map_callback(self, map_msg):
         # This method is called when a new map is received
-        # Use this method to update the map for planning
-        map_obj = map_msg
-        return map_obj
+        rospy.loginfo("Map received")
+        self.current_map_ = map_msg
+        
+    def pose_callback(self, pose_msg):
+        # This method is called when a new pose is received
+        rospy.loginfo("Pose received")
+        self.current_pose_ = pose_msg
+    
+    def identify_frontiers(self, current_map): # 
+        frontiers = []
+       # Extract map dimensions and data
+        width =self.current_map_.info.width
+        height =self.current_map_.info.height
+        resolution =self.current_map_.info.resolution
+        data =self.current_map_.data  # Occupancy grid data
+
+        for i in range(width * height):
+            # Check if the current cell is free (value = 0) and has unknown cells (value = -1) nearby
+            if data[i] == 0:
+                # Check neighbors for unknown regions (e.g., left, right, up, down)
+                if self.is_frontier(i, width, height, data):
+                    frontiers.append(i)
+
+        return frontiers
+
+    def is_frontier(self, index, width, height, data): # the need to identify wheteher it is a 
+        # frontier point or not. As the frontier points 
+        # Check if any neighboring cells are unknown (-1)
+        neighbors = self.get_neighbors(index, width, height)
+        for neighbor in neighbors:
+            if data[neighbor] == -1:
+                return True
+        return False
+
+    def get_neighbors(self, index, width, height):
+        # To identify frontier points, we need to check the neighboring cells if the 
+        # neighboring cells are unknown (-1)then the current cell is a frontier point.
+        neighbors = []
+        if index % width > 0:  # Left neighbor
+            neighbors.append(index - 1)
+        if index % width < width - 1:  # Right neighbor
+            neighbors.append(index + 1)
+        if index >= width:  # Up neighbor
+            neighbors.append(index - width)
+        if index < (height - 1) * width:  # Down neighbor
+            neighbors.append(index + width)
+        
+        return neighbors  
+    
+    
+    def select_frontier(self, frontiers, current_position):
+        # Sort frontiers based on distance to the robot's current position
+        sorted_frontiers = sorted(frontiers, key=lambda f: self.compute_distance(f, current_position))
+        
+        # Return the closest or most appropriate frontier
+        return sorted_frontiers[0] if sorted_frontiers else None
+    
+    def compute_distance(self, index, current_position):
+        # Compute the Euclidean distance between the frontier cell and the robot's current position
+        frontier_position = self.index_to_position(index)
+        dx = frontier_position[0] - current_position.x
+        dy = frontier_position[1] - current_position.y
+        return math.sqrt(dx**2 + dy**2)
+    
+    def index_to_position(self, index):
+        # Convert the index of the grid cell to a (x, y) position in the map
+        width = self.current_map_.info.width
+        resolution = self.current_map_.info.resolution
+        origin_x = self.current_map_.info.origin.position.x
+        origin_y = self.current_map_.info.origin.position.y
+        
+        x = (index % width) * resolution + origin_x
+        y = (index // width) * resolution + origin_y
+        return Point(x, y, 0)  # Return as a Point object
+
+    def move_to_frontier(self, frontier):
+        # Create a goal for move_base
+            action_goal = MoveBaseActionGoal()
+            action_goal.goal.target_pose.header.frame_id = "map"
+            action_goal.goal_id = self.goal_counter_
+            self.goal_counter_ = self.goal_counter_ + 1
+            #find the goal and plug it in
+            action_goal.goal.target_pose.pose = pose2d_to_pose(frontier)
+
+            rospy.loginfo('Sending goal...')
+            self.move_base_action_client_.send_goal(action_goal.goal)
+
     def exploration_planner(self, action_state):      
         # frontier based exploration planner 
-        # Step 1: Get the current map
-        current_map = self.map_callback()
-
-           # Step 2: Identify frontiers
+        # acquire the current map
+        current_map = self.current_map_
+        #  Identify frontiers
         frontiers = self.identify_frontiers(current_map)
 
-            # Step 3: Select the best frontier to explore
-        best_frontier = self.select_best_frontier(frontiers)
+        # Select the best frontier to explore
 
-        # Step 4: Send a goal to move_base to explore the selected frontier
+        # Send a goal to move_base to explore the selected frontier
         if action_state != actionlib.GoalStatus.ACTIVE:
+            #set move_to_frontier(frontier)
             pass
-        if best_frontier:
-                action_goal = MoveBaseActionGoal()
-                action_goal.goal.target_pose.header.frame_id = "map"
-                action_goal.goal_id = self.goal_counter_
-                self.goal_counter_ += 1
-                action_goal.goal.target_pose.pose = self.frontier_to_pose(best_frontier)
-                rospy.loginfo('Sending goal to explore frontier...')
-                self.move_base_action_client_.send_goal(action_goal.goal)
-  
+
   
     def main_loop(self):
 
