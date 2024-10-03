@@ -99,6 +99,8 @@ class CaveExplorer:
         # Subscribe to the camera topic
         self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
 
+        # Subscribe to the map topic
+        self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
 
     def get_pose_2d(self):
 
@@ -293,7 +295,35 @@ class CaveExplorer:
 
             rospy.loginfo('Sending goal...')
             self.move_base_action_client_.send_goal(action_goal.goal)
+    def map_callback(self, map_msg):
+        # This method is called when a new map is received
+        # Use this method to update the map for planning
+        map_obj = map_msg
+        return map_obj
+    def exploration_planner(self, action_state):      
+        # frontier based exploration planner 
+        # Step 1: Get the current map
+        current_map = self.map_callback()
 
+           # Step 2: Identify frontiers
+        frontiers = self.identify_frontiers(current_map)
+
+            # Step 3: Select the best frontier to explore
+        best_frontier = self.select_best_frontier(frontiers)
+
+        # Step 4: Send a goal to move_base to explore the selected frontier
+        if action_state != actionlib.GoalStatus.ACTIVE:
+            pass
+        if best_frontier:
+                action_goal = MoveBaseActionGoal()
+                action_goal.goal.target_pose.header.frame_id = "map"
+                action_goal.goal_id = self.goal_counter_
+                self.goal_counter_ += 1
+                action_goal.goal.target_pose.pose = self.frontier_to_pose(best_frontier)
+                rospy.loginfo('Sending goal to explore frontier...')
+                self.move_base_action_client_.send_goal(action_goal.goal)
+  
+  
     def main_loop(self):
 
         while not rospy.is_shutdown():
