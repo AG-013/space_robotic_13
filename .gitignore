@@ -1,9 +1,4 @@
-<<<<<<< HEAD
 cave_explorer/model/yolov5/
 cave_explorer/model/yolov5s.pt
 cave_explorer/model/training_set/
 cave_explorer/model/training_set_archive/
-=======
-space_robotic_13/cave_explorer/model/yolov5/
-space_robotic_13/cave_explorer/model/yolov5s.pt
->>>>>>> 60c35662261026efe85bd995ecd3c2afcccef012
