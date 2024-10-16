@@ -1,0 +1,5 @@
+train: ./../training_set_1/images/train
+val: ./../training_set_1/images/val
+
+nc: 5  # number of classes
+names: ['alien', 'mineral', 'orb', 'ice', 'mushroom']  # class names
