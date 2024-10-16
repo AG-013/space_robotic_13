@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
+import sys
+import os
 import rospy
 import roslib
 import math
 import cv2 # OpenCV2
 from cv_bridge import CvBridge, CvBridgeError
+import torch
 import numpy as np
 from nav_msgs.srv import GetMap
 from nav_msgs.msg import OccupancyGrid
@@ -138,37 +141,71 @@ class CaveExplorer:
         image = np.copy(image)
 
         # Create a grayscale version, since the simple model below uses this
-        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        #image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         # Retrieve the pre-trained model
-        stop_sign_model = self.computer_vision_model_
+        # stop_sign_model = self.computer_vision_model_
 
         # Detect artifacts in the image
         # The minSize is used to avoid very small detections that are probably noise
-        detections = stop_sign_model.detectMultiScale(image, minSize=(20,20))
+        # detections = stop_sign_model.detectMultiScale(image, minSize=(20,20))
+        #model = torch.load('/home/coldwove/catkin_ws/src/space_robotic_13/cave_explorer/model/model/training_set_1_model.pt', map_location='cpu')
+        #sys.path.append('/home/coldwove/catkin_ws/src/space_robotic_13/cave_explorer/model/yolov5')
+
+        path = os.path.abspath(__file__)
+        src_dir = os.path.dirname(path)
+        parent_dir = os.path.dirname(src_dir)
+        model_path = os.path.join(parent_dir, 'model/model/best.pt')
+
+        model = torch.hub.load(
+            'ultralytics/yolov5',
+            'custom',
+            path=model_path,
+            #path='/home/coldwove/catkin_ws/src/space_robotic_13/cave_explorer/model/yolov5/runs/train/exp/weights/best.pt',
+            force_reload=False
+        )
+
+        model.eval()
+        results = model(image)
 
         # You can set "artifact_found_" to true to signal to "main_loop" that you have found a artifact
         # You may want to communicate more information
         # Since the "image_callback" and "main_loop" methods can run at the same time you should protect any shared variables
         # with a mutex
         # "artifact_found_" doesn't need a mutex because it's an atomic
-        num_detections = len(detections)
+        #num_detections = len(detections)
 
+        #if num_detections > 0:
+        #    self.artifact_found_ = True
+        #else:
+        #    self.artifact_found_ = False
+
+        # Draw a bounding box rectangle on the image for each detection
+        #for(x, y, width, height) in detections:
+        #    cv2.rectangle(image, (x, y), (x + height, y + width), (0, 255, 0), 5)
+
+        detections = results.xyxy[0]  # Get detections as a tensor
+        #results.render() 
+        # Check the number of detections
+        num_detections = detections.shape[0]
+
+        # Set artifact_found_ based on detections
         if num_detections > 0:
             self.artifact_found_ = True
         else:
             self.artifact_found_ = False
 
-        # Draw a bounding box rectangle on the image for each detection
-        for(x, y, width, height) in detections:
-            cv2.rectangle(image, (x, y), (x + height, y + width), (0, 255, 0), 5)
+        # Draw bounding boxes for each detection
+        for *bbox, conf, cls in detections.tolist():  # Convert tensor to list
+            x1, y1, x2, y2 = map(int, bbox)  # Extract coordinates and convert to integers
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 5)  # Draw rectangle
 
         # Publish the image with the detection bounding boxes
         image_detection_message = self.cv_bridge_.cv2_to_imgmsg(image, encoding="rgb8")
         self.image_detections_pub_.publish(image_detection_message)
 
-        rospy.loginfo('image_callback')
-        rospy.loginfo('artifact_found_: ' + str(self.artifact_found_))
+        #rospy.loginfo('image_callback')
+        #rospy.loginfo('artifact_found_: ' + str(self.artifact_found_))
 
 
     def planner_move_forwards(self, action_state):
