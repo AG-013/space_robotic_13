@@ -126,7 +126,7 @@ class CaveExplorer:
         else: 
             pose.theta = wrap_angle(-2. * math.acos(qw));
 
-        print("pose: ", pose)
+        # print("pose: ", pose)
 
         return pose
 
@@ -334,10 +334,16 @@ class CaveExplorer:
 
             # Select the best frontier to explore
             selected_frontier = self.select_frontier(frontiers, self.get_pose_2d())
+            
+            if selected_frontier is None:
+                frontier_1
+                rospy.logwarn('No frontier selected')
+            else:
+                rospy.loginfo('-------------Selected frontier: ' )
             # Send a goal to move_base to explore the selected frontier
             
             pose_2d = Pose2D()
-            pose_2d.x = 0   # check the frontier points that is selected
+            pose_2d.x = 0    # check the frontier points that is selected
             pose_2d.y = 0
             pose_2d.theta = 0
 
@@ -404,8 +410,8 @@ class CaveExplorer:
         # Compute the Euclidean distance between the frontier cell and the robot's current position
         current_position = self.get_pose_2d()
         frontier_position = self.index_to_position(index)
-        dx = frontier_position[0] - current_position.x
-        dy = frontier_position[1] - current_position.y
+        dx = frontier_position.x - current_position.x
+        dy = frontier_position.y - current_position.y
         distance = math.sqrt(dx**2 + dy**2)
         return distance
     
