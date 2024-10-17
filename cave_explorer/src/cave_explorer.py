@@ -316,17 +316,24 @@ class CaveExplorer:
         # frontier based exploration planner 
         # acquire the current map
         if action_state != actionlib.GoalStatus.ACTIVE:
-            
+            while self.current_map_ is None:
+                    rospy.logwarn("Map not available yet, waiting for map...")
+                    rospy.sleep(1.0)  # Wait for the map to be received
+                    continue  # Keep waiting until the map is received
             # load the current map
             current_map = self.current_map_
             if current_map is not None:
-                print("current map received.......................")
+                rospy.loginfo('Map received')
                 
             #  Identify frontiers
             frontiers = self.identify_frontiers(current_map)
+            if not frontiers:
+                rospy.loginfo('No frontiers found!............')
+            else:
+                rospy.loginfo('Frontiers found!!!!!!!@@@@@@@@')
 
             # Select the best frontier to explore
-
+            selected_frontier = self.select_frontier(frontiers, self.get_pose_2d())
             # Send a goal to move_base to explore the selected frontier
             
             pose_2d = Pose2D()
@@ -348,9 +355,9 @@ class CaveExplorer:
     def identify_frontiers(self, current_map): 
         frontiers = []
        # Extract map dimensions and data
-        width =self.current_map.info.width
-        height =self.current_map.info.height
-        data =self.current_map.data  # Occupancy grid data
+        width =current_map.info.width
+        height =current_map.info.height
+        data =current_map.data  # Occupancy grid data
 
         for i in range(width * height):
             # Check if the current cell is free (value = 0) and has unknown cells (value = -1) nearby
@@ -395,10 +402,12 @@ class CaveExplorer:
     
     def compute_distance(self, index, current_position):
         # Compute the Euclidean distance between the frontier cell and the robot's current position
+        current_position = self.get_pose_2d()
         frontier_position = self.index_to_position(index)
         dx = frontier_position[0] - current_position.x
         dy = frontier_position[1] - current_position.y
-        return math.sqrt(dx**2 + dy**2)
+        distance = math.sqrt(dx**2 + dy**2)
+        return distance
     
     def index_to_position(self, index):
         # Convert the index of the grid cell to a (x, y) position in the map
@@ -454,16 +463,16 @@ class CaveExplorer:
             print("Calling planner:", self.planner_type_.name)
             if self.planner_type_ == PlannerType.EXPLORATION:
                 self.exploration_planner(action_state)
-            elif self.planner_type_ == PlannerType.MOVE_FORWARDS:
-                self.planner_move_forwards(action_state)
-            elif self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT:
-                self.planner_go_to_first_artifact(action_state)
-            elif self.planner_type_ == PlannerType.RETURN_HOME:
-                self.planner_return_home(action_state)
-            elif self.planner_type_ == PlannerType.RANDOM_WALK:
-                self.planner_random_walk(action_state)
-            elif self.planner_type_ == PlannerType.RANDOM_GOAL:
-                self.planner_random_goal(action_state)
+            # elif self.planner_type_ == PlannerType.MOVE_FORWARDS:
+            #     self.planner_move_forwards(action_state)
+            # elif self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT:
+            #     self.planner_go_to_first_artifact(action_state)
+            # elif self.planner_type_ == PlannerType.RETURN_HOME:
+            #     self.planner_return_home(action_state)
+            # elif self.planner_type_ == PlannerType.RANDOM_WALK:
+            #     self.planner_random_walk(action_state)
+            # elif self.planner_type_ == PlannerType.RANDOM_GOAL:
+            #     self.planner_random_goal(action_state)
 
 
             #######################################################
