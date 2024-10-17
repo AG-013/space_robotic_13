@@ -54,6 +54,7 @@ class PlannerType(Enum):
     GO_TO_FIRST_ARTIFACT = 3
     RANDOM_WALK = 4
     RANDOM_GOAL = 5
+    EXPLORATION = 6
     # Add more!
 
 class CaveExplorer:
@@ -68,7 +69,7 @@ class CaveExplorer:
         self.reached_first_artifact_ = False
         self.returned_home_ = False
         self.goal_counter_ = 0 # gives each goal sent to move_base a unique ID
-
+        self.exploration_done_ = False
         # Initialise CvBridge
         self.cv_bridge_ = CvBridge()
 
@@ -300,6 +301,7 @@ class CaveExplorer:
 
             rospy.loginfo('Sending goal...')
             self.move_base_action_client_.send_goal(action_goal.goal)
+    
     def map_callback(self, map_msg):
         # This method is called when a new map is received
         rospy.loginfo("Map received")
@@ -309,14 +311,46 @@ class CaveExplorer:
         # This method is called when a new pose is received
         rospy.loginfo("Pose received")
         self.current_pose_ = pose_msg
+   
+    def exploration_planner(self, action_state):      
+        # frontier based exploration planner 
+        # acquire the current map
+        if action_state != actionlib.GoalStatus.ACTIVE:
+            
+            # load the current map
+            current_map = self.current_map_
+            if current_map is not None:
+                print("current map received.......................")
+                
+            #  Identify frontiers
+            frontiers = self.identify_frontiers(current_map)
+
+            # Select the best frontier to explore
+
+            # Send a goal to move_base to explore the selected frontier
+            
+            pose_2d = Pose2D()
+            pose_2d.x = 0   # check the frontier points that is selected
+            pose_2d.y = 0
+            pose_2d.theta = 0
+
+            # send the goal to the robot
+            action_goal = MoveBaseActionGoal()
+            action_goal.goal.target_pose.header.frame_id = "map"
+            action_goal.goal_id = self.goal_counter_
+            self.goal_counter_ = self.goal_counter_ + 1
+            #find the goal and plug it in
+            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
+
+            rospy.loginfo('Sending goal...')
+            self.move_base_action_client_.send_goal(action_goal.goal)
     
-    def identify_frontiers(self, current_map): # 
+    def identify_frontiers(self, current_map): 
         frontiers = []
        # Extract map dimensions and data
-        width =self.current_map_.info.width
-        height =self.current_map_.info.height
-        resolution =self.current_map_.info.resolution
-        data =self.current_map_.data  # Occupancy grid data
+        width =self.current_map.info.width
+        height =self.current_map.info.height
+        data =self.current_map.data  # Occupancy grid data
 
         for i in range(width * height):
             # Check if the current cell is free (value = 0) and has unknown cells (value = -1) nearby
@@ -377,31 +411,6 @@ class CaveExplorer:
         y = (index // width) * resolution + origin_y
         return Point(x, y, 0)  # Return as a Point object
 
-    def move_to_frontier(self, frontier):
-        # Create a goal for move_base
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            #find the goal and plug it in
-            action_goal.goal.target_pose.pose = pose2d_to_pose(frontier)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-
-    def exploration_planner(self, action_state):      
-        # frontier based exploration planner 
-        # acquire the current map
-        current_map = self.current_map_
-        #  Identify frontiers
-        frontiers = self.identify_frontiers(current_map)
-
-        # Select the best frontier to explore
-
-        # Send a goal to move_base to explore the selected frontier
-        if action_state != actionlib.GoalStatus.ACTIVE:
-            #set move_to_frontier(frontier)
-            pass
 
   
     def main_loop(self):
@@ -414,7 +423,10 @@ class CaveExplorer:
             action_state = self.move_base_action_client_.get_state()
             rospy.loginfo('action state: ' + self.move_base_action_client_.get_goal_status_text())
             rospy.loginfo('action_state number:' + str(action_state))
-
+            
+            if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
+                print("Successfully explored!")
+                self.exploration_done_ = True
             if (self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT) and (action_state == actionlib.GoalStatus.SUCCEEDED):
                 print("Successfully reached first artifact!")
                 self.reached_first_artifact_ = True
@@ -422,14 +434,12 @@ class CaveExplorer:
                 print("Successfully returned home!")
                 self.returned_home_ = True
 
-
-
-
             #######################################################
             # Select the next planner to execute
             # Update this logic as you see fit!
-            # self.planner_type_ = PlannerType.MOVE_FORWARDS
-            if not self.reached_first_artifact_:
+            if not self.exploration_done_:
+                self.planner_type_ = PlannerType.EXPLORATION
+            elif not self.reached_first_artifact_:
                 self.planner_type_ = PlannerType.GO_TO_FIRST_ARTIFACT
             elif not self.returned_home_:
                 self.planner_type_ = PlannerType.RETURN_HOME
@@ -442,7 +452,9 @@ class CaveExplorer:
             # The methods send a goal to "move_base" with "self.move_base_action_client_"
             # Add your own planners here!
             print("Calling planner:", self.planner_type_.name)
-            if self.planner_type_ == PlannerType.MOVE_FORWARDS:
+            if self.planner_type_ == PlannerType.EXPLORATION:
+                self.exploration_planner(action_state)
+            elif self.planner_type_ == PlannerType.MOVE_FORWARDS:
                 self.planner_move_forwards(action_state)
             elif self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT:
                 self.planner_go_to_first_artifact(action_state)
