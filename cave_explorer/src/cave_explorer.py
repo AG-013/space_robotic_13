@@ -8,6 +8,7 @@ from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
 from nav_msgs.srv import GetMap
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Odometry
 import tf
 from std_srvs.srv import Empty
 from geometry_msgs.msg import Twist
@@ -105,8 +106,8 @@ class CaveExplorer:
         self.current_map_ = None
     
         #Subscriber of the pose
-        self.pose_sub = rospy.Subscriber("/acml_pose", PoseWithCovarianceStamped, self.pose_callback, queue_size=1)
-        self.current_pose_ = None
+        self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
+        self.odom_ = None
 
     def get_pose_2d(self):
 
@@ -139,41 +140,42 @@ class CaveExplorer:
         # adapted from: https://www.geeksforgeeks.org/detect-an-object-with-opencv-python/
 
         # Copy the image message to a cv image
-        # see http://wiki.ros.org/cv_bridge/Tutorials/ConvertingBetweenROSImagesAndOpenCVImagesPython
-        image = self.cv_bridge_.imgmsg_to_cv2(image_msg, desired_encoding='passthrough')
+        # # see http://wiki.ros.org/cv_bridge/Tutorials/ConvertingBetweenROSImagesAndOpenCVImagesPython
+        # image = self.cv_bridge_.imgmsg_to_cv2(image_msg, desired_encoding='passthrough')
 
-        # Create a grayscale version, since the simple model below uses this
-        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # # Create a grayscale version, since the simple model below uses this
+        # image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Retrieve the pre-trained model
-        stop_sign_model = self.computer_vision_model_
+        # # Retrieve the pre-trained model
+        # stop_sign_model = self.computer_vision_model_
 
-        # Detect artifacts in the image
-        # The minSize is used to avoid very small detections that are probably noise
-        detections = stop_sign_model.detectMultiScale(image, minSize=(20,20))
+        # # Detect artifacts in the image
+        # # The minSize is used to avoid very small detections that are probably noise
+        # detections = stop_sign_model.detectMultiScale(image, minSize=(20,20))
 
-        # You can set "artifact_found_" to true to signal to "main_loop" that you have found a artifact
-        # You may want to communicate more information
-        # Since the "image_callback" and "main_loop" methods can run at the same time you should protect any shared variables
-        # with a mutex
-        # "artifact_found_" doesn't need a mutex because it's an atomic
-        num_detections = len(detections)
+        # # You can set "artifact_found_" to true to signal to "main_loop" that you have found a artifact
+        # # You may want to communicate more information
+        # # Since the "image_callback" and "main_loop" methods can run at the same time you should protect any shared variables
+        # # with a mutex
+        # # "artifact_found_" doesn't need a mutex because it's an atomic
+        # num_detections = len(detections)
 
-        if num_detections > 0:
-            self.artifact_found_ = True
-        else:
-            self.artifact_found_ = False
+        # if num_detections > 0:
+        #     self.artifact_found_ = True
+        # else:
+        #     self.artifact_found_ = False
 
-        # Draw a bounding box rectangle on the image for each detection
-        for(x, y, width, height) in detections:
-            cv2.rectangle(image, (x, y), (x + height, y + width), (0, 255, 0), 5)
+        # # Draw a bounding box rectangle on the image for each detection
+        # for(x, y, width, height) in detections:
+        #     cv2.rectangle(image, (x, y), (x + height, y + width), (0, 255, 0), 5)
 
-        # Publish the image with the detection bounding boxes
-        image_detection_message = self.cv_bridge_.cv2_to_imgmsg(image, encoding="rgb8")
-        self.image_detections_pub_.publish(image_detection_message)
+        # # Publish the image with the detection bounding boxes
+        # image_detection_message = self.cv_bridge_.cv2_to_imgmsg(image, encoding="rgb8")
+        # self.image_detections_pub_.publish(image_detection_message)
 
-        rospy.loginfo('image_callback')
-        rospy.loginfo('artifact_found_: ' + str(self.artifact_found_))
+        # rospy.loginfo('image_callback')
+        # rospy.loginfo('artifact_found_: ' + str(self.artifact_found_))
+        pass
 
 
     def planner_move_forwards(self, action_state):
@@ -304,14 +306,28 @@ class CaveExplorer:
     
     def map_callback(self, map_msg):
         # This method is called when a new map is received
-        rospy.loginfo("Map received")
+        # rospy.loginfo("Map received")
         self.current_map_ = map_msg
         
-    def pose_callback(self, pose_msg):
-        # This method is called when a new pose is received
-        rospy.loginfo("Pose received")
-        self.current_pose_ = pose_msg
-   
+    def odom_callback(self,odom_sub_):
+        # Extract position data
+        # rospy.loginfo ("Odo received")
+        self.odom_ = odom_sub_
+
+        self.current_position = Point()
+
+        # Extract pose
+        position = self.odom_.pose.pose.position
+        self.current_position.x = position.x
+        self.current_position.y = position.y
+
+        orientation = self.odom_.pose.pose.orientation
+        # Extract twist 
+        linear = self.odom_.twist.twist.linear
+        angular = self.odom_.twist.twist.angular
+        
+
+
     def exploration_planner(self, action_state):      
         # frontier based exploration planner 
         # acquire the current map
@@ -333,88 +349,89 @@ class CaveExplorer:
                 rospy.loginfo('Frontiers found!!!!!!!@@@@@@@@')
 
             # Select the best frontier to explore
-            selected_frontier = self.select_frontier(frontiers, self.get_pose_2d())
+            selected_frontier = self.select_nearest_frontier(frontiers)
             
             if selected_frontier is None:
-                frontier_1
+                
                 rospy.logwarn('No frontier selected')
             else:
-                rospy.loginfo('-------------Selected frontier: ' )
-            # Send a goal to move_base to explore the selected frontier
-            
-            pose_2d = Pose2D()
-            pose_2d.x = 0    # check the frontier points that is selected
-            pose_2d.y = 0
-            pose_2d.theta = 0
+                rospy.loginfo(f'-------------Selected frontier: {selected_frontier}')
+                self.move_to_frontier(selected_frontier)
+                rospy.loginfo (' goal sent ... moving')
+                rospy.sleep(1)
 
-            # send the goal to the robot
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            #find the goal and plug it in
-            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-    
     def identify_frontiers(self, current_map): 
         frontiers = []
        # Extract map dimensions and data
         width =current_map.info.width
         height =current_map.info.height
         data =current_map.data  # Occupancy grid data
+        origin = current_map.info.origin.position
+        resolution = current_map.info.resolution
+        
+        map_array = np.array(current_map.data).reshape((height, width))
 
-        for i in range(width * height):
-            # Check if the current cell is free (value = 0) and has unknown cells (value = -1) nearby
-            if data[i] == 0:
-                # Check neighbors for unknown regions (e.g., left, right, up, down)
-                if self.is_frontier(i, width, height, data):
-                    frontiers.append(i)
-
+        for i in range(height):
+                for j in range(width):
+                    if map_array[i, j] == 0:  # Free space
+                        neighbors = self.get_neighbors(i, j, map_array)
+                        for n in neighbors:
+                            if map_array[n[0], n[1]] == -1:  # Unknown space
+                                frontiers.append((i, j))
+                                break
         return frontiers
 
-    def is_frontier(self, index, width, height, data): # the need to identify wheteher it is a 
-        # frontier point or not. As the frontier points 
-        # Check if any neighboring cells are unknown (-1)
-        neighbors = self.get_neighbors(index, width, height)
-        for neighbor in neighbors:
-            if data[neighbor] == -1:
-                return True
-        return False
 
-    def get_neighbors(self, index, width, height):
-        # To identify frontier points, we need to check the neighboring cells if the 
-        # neighboring cells are unknown (-1)then the current cell is a frontier point.
+    def get_neighbors(self, row, col, map_array):
         neighbors = []
-        if index % width > 0:  # Left neighbor
-            neighbors.append(index - 1)
-        if index % width < width - 1:  # Right neighbor
-            neighbors.append(index + 1)
-        if index >= width:  # Up neighbor
-            neighbors.append(index - width)
-        if index < (height - 1) * width:  # Down neighbor
-            neighbors.append(index + width)
-        
-        return neighbors  
+        height, width = map_array.shape
+        if row > 0: neighbors.append((row-1, col))
+        if row < height-1: neighbors.append((row+1, col))
+        if col > 0: neighbors.append((row, col-1))
+        if col < width-1: neighbors.append((row, col+1))
+        return neighbors
     
     
-    def select_frontier(self, frontiers, current_position):
-        # Sort frontiers based on distance to the robot's current position
-        sorted_frontiers = sorted(frontiers, key=lambda f: self.compute_distance(f, current_position))
-        
-        # Return the closest or most appropriate frontier
-        return sorted_frontiers[0] if sorted_frontiers else None
+    def select_nearest_frontier(self, frontiers):
+        if frontiers:
+            frontiers.sort(key=self.compute_distance)
+            return frontiers[0]
+        return None
     
-    def compute_distance(self, index, current_position):
-        # Compute the Euclidean distance between the frontier cell and the robot's current position
-        current_position = self.get_pose_2d()
-        frontier_position = self.index_to_position(index)
-        dx = frontier_position.x - current_position.x
-        dy = frontier_position.y - current_position.y
-        distance = math.sqrt(dx**2 + dy**2)
-        return distance
+    def compute_distance(self, frontier):
+        if self.odom_:
+            map_res = self.current_map_.info.resolution
+            map_origin = self.current_map_.info.origin.position
+            x, y = frontier
+            frontier_x = x * map_res + map_origin.x
+            frontier_y = y * map_res + map_origin.y
+            distance = np.sqrt((self.current_position.x - frontier_x) ** 2 + (self.current_position.y - frontier_y) ** 2)
+            return distance
+        return float('inf')
     
+    def move_to_frontier(self, frontier):
+        map_resolution = self.current_map_.info.resolution
+        map_origin = self.current_map_.info.origin.position
+        x , y = frontier
+        # Send a goal to move_base to explore the selected frontier
+        pose_2d = Pose2D
+        # Move forward 10m
+        pose_2d.x = x*map_resolution +map_origin.x
+        pose_2d.y = y * map_resolution + map_origin.y
+        pose_2d.theta = math.pi/2
+        print (f'x:{pose_2d.x} , y:{pose_2d.y}')
+
+        # Send a goal to "move_base" with "self.move_base_action_client_"
+        action_goal = MoveBaseActionGoal()
+        action_goal.goal.target_pose.header.frame_id = "map"
+        action_goal.goal_id = self.goal_counter_
+        self.goal_counter_ = self.goal_counter_ + 1
+        action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
+
+        rospy.loginfo('Sending goal...')
+        self.move_base_action_client_.send_goal(action_goal.goal)
+    
+
     def index_to_position(self, index):
         # Convert the index of the grid cell to a (x, y) position in the map
         width = self.current_map_.info.width
