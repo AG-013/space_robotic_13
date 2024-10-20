@@ -355,9 +355,18 @@ class CaveExplorer:
                 
                 rospy.logwarn('No frontier selected')
             else:
-                rospy.loginfo(f'-------------Selected frontier: {selected_frontier}')
-                self.move_to_frontier(selected_frontier)
+                rospy.loginfo('frontiers selected: ')
+                for frontier in selected_frontier:
+                    self.move_to_frontier(frontier)
+                    
                 rospy.loginfo (' goal sent ... moving')
+                # check if reachable 
+                # if not reachable, send next frontier
+                # wait for goal to be reached
+                #send next frontier
+                
+                # send the fiirtst frontirer goal wait for it to reach there 
+                # do a re scan and re make frontiers now send the most highest frontier 
                 rospy.sleep(1)
 
     def identify_frontiers(self, current_map): 
@@ -395,7 +404,7 @@ class CaveExplorer:
     def select_nearest_frontier(self, frontiers):
         if frontiers:
             frontiers.sort(key=self.compute_distance)
-            return frontiers[0]
+            return frontiers
         return None
     
     def compute_distance(self, frontier):
@@ -412,6 +421,9 @@ class CaveExplorer:
     def move_to_frontier(self, frontier):
         map_resolution = self.current_map_.info.resolution
         map_origin = self.current_map_.info.origin.position
+        # send first selected frontier to move_base and remove it from
+        # till all the frontiers are sent to move_base
+        rospy.loginfo(f'Moving to frontier:{frontier}')
         x , y = frontier
         # Send a goal to move_base to explore the selected frontier
         pose_2d = Pose2D
@@ -458,25 +470,25 @@ class CaveExplorer:
             
             if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
                 print("Successfully explored!")
-                self.exploration_done_ = True
-            if (self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-                print("Successfully reached first artifact!")
-                self.reached_first_artifact_ = True
-            if (self.planner_type_ == PlannerType.RETURN_HOME) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-                print("Successfully returned home!")
-                self.returned_home_ = True
+                # self.exploration_done_ = 1
+            # if (self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT) and (action_state == actionlib.GoalStatus.SUCCEEDED):
+            #     print("Successfully reached first artifact!")
+            #     self.reached_first_artifact_ = True
+            # if (self.planner_type_ == PlannerType.RETURN_HOME) and (action_state == actionlib.GoalStatus.SUCCEEDED):
+            #     print("Successfully returned home!")
+            #     self.returned_home_ = True
 
             #######################################################
             # Select the next planner to execute
             # Update this logic as you see fit!
             if not self.exploration_done_:
                 self.planner_type_ = PlannerType.EXPLORATION
-            elif not self.reached_first_artifact_:
-                self.planner_type_ = PlannerType.GO_TO_FIRST_ARTIFACT
-            elif not self.returned_home_:
-                self.planner_type_ = PlannerType.RETURN_HOME
-            else:
-                self.planner_type_ = PlannerType.RANDOM_GOAL
+            # elif not self.reached_first_artifact_:
+            #     self.planner_type_ = PlannerType.GO_TO_FIRST_ARTIFACT
+            # elif not self.returned_home_:
+            #     self.planner_type_ = PlannerType.RETURN_HOME
+            # else:
+            #     self.planner_type_ = PlannerType.RANDOM_GOAL
 
 
             #######################################################
