@@ -333,33 +333,74 @@ class CaveExplorer:
         # acquire the current map
         if action_state != actionlib.GoalStatus.ACTIVE:
             while self.current_map_ is None:
-                    rospy.logwarn("Map not available yet, waiting for map...")
-                    rospy.sleep(1.0)  # Wait for the map to be received
-                    continue  # Keep waiting until the map is received
+                rospy.logwarn("Map not available yet, waiting for map...")
+                rospy.sleep(1.0)  # Wait for the map to be received
+                continue  # Keep waiting until the map is received
+                
             # load the current map
             current_map = self.current_map_
-            if current_map is not None:
-                rospy.loginfo('Map received')
+            print ( ' map acquired')
                 
             #  Identify frontiers
             frontiers = self.identify_frontiers(current_map)
             if not frontiers:
                 rospy.loginfo('No frontiers found!............')
-            else:
-                rospy.loginfo('Frontiers found!!!!!!!@@@@@@@@')
 
             # Select the best frontier to explore
             selected_frontier = self.select_nearest_frontier(frontiers)
-            
+            print ('new frontiers selected')
+            # 
+            visited_frontier = set()
             if selected_frontier is None:
-                
                 rospy.logwarn('No frontier selected')
-            else:
-                rospy.loginfo('frontiers selected: ')
-                for frontier in selected_frontier:
-                    self.move_to_frontier(frontier)
+                return
+            
+            for frontier in frontiers :#& action_state == 1  or action_state == 4 or action_state == 3:   
+                if frontier == visited_frontier:
+                    continue #skiip the frontier
+                
+                #access next frontier
+                self.move_to_frontier(frontier)
+                print (f'frontier sent.... : {frontier}')
+                start_time = rospy.Time.now()
+                while True:
+                    action_state = self.move_base_action_client_.get_state()
                     
-                rospy.loginfo (' goal sent ... moving')
+                    if action_state == 3 :#actionlib.GoalStatus.SUCCEEDED:
+                        print("Successfully reached the frontier!")
+                        visited_frontier.add(frontier)
+                        if frontier in frontiers:
+                            frontiers.remove(frontier)  
+                        break # move to next frontier
+                    
+                    elif action_state == 4 or action_state == 5:#actionlib.GoalStatus.REJECTED:
+                        visited_frontier.add(frontier)
+                        if frontier in frontiers:
+                            frontiers.remove(frontier)
+                        rospy.loginfo('Goal rejected')
+                        break
+                    
+                    if (rospy.Time.now() - start_time).to_sec() > 10:
+                        rospy.loginfo('Time out goal aborted')
+                        visited_frontier.add(frontier)
+                        if frontier in frontiers:
+                            frontiers.remove(frontier)
+                        break
+                # if action_state == [3] or (rospy.Time.now() - start_time).to_sec() > 10:
+                #     break # to re identify frontiers
+            
+        
+        rospy.sleep(1)     
+
+                #   if success:
+                #       rospy.loginfo(f'Successfully moved to frontier: {frontier}')
+                #       frontiers.remove(frontier)
+                #       frontier = None
+                #       print (f'frontier: {frontier}')
+                      
+                #       if not frontiers:
+                #           rospy.loginfo('No new frontiers found !!!! EXPLORATION COMPLETED') 
+                    
                 # check if reachable 
                 # if not reachable, send next frontier
                 # wait for goal to be reached
@@ -367,7 +408,6 @@ class CaveExplorer:
                 
                 # send the fiirtst frontirer goal wait for it to reach there 
                 # do a re scan and re make frontiers now send the most highest frontier 
-                rospy.sleep(1)
 
     def identify_frontiers(self, current_map): 
         frontiers = []
@@ -423,11 +463,10 @@ class CaveExplorer:
         map_origin = self.current_map_.info.origin.position
         # send first selected frontier to move_base and remove it from
         # till all the frontiers are sent to move_base
-        rospy.loginfo(f'Moving to frontier:{frontier}')
         x , y = frontier
-        # Send a goal to move_base to explore the selected frontier
+            # Send a goal to move_base to explore the selected frontier
         pose_2d = Pose2D
-        # Move forward 10m
+            # Move forward 10m
         pose_2d.x = x*map_resolution +map_origin.x
         pose_2d.y = y * map_resolution + map_origin.y
         pose_2d.theta = math.pi/2
@@ -439,9 +478,10 @@ class CaveExplorer:
         action_goal.goal_id = self.goal_counter_
         self.goal_counter_ = self.goal_counter_ + 1
         action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-        rospy.loginfo('Sending goal...')
+            
+            # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
+            
     
 
     def index_to_position(self, index):
