@@ -347,15 +347,16 @@ class CaveExplorer:
                 rospy.loginfo('No frontiers found!............')
 
             # Select the best frontier to explore
+            print (f'frontiers found : {len(frontiers)}')
             selected_frontier = self.select_nearest_frontier(frontiers)
-            print ('new frontiers selected')
+            print (f'new frontiers selected : {selected_frontier[0]}')
             # 
             visited_frontier = set()
             if selected_frontier is None:
                 rospy.logwarn('No frontier selected')
                 return
             
-            for frontier in frontiers :#& action_state == 1  or action_state == 4 or action_state == 3:   
+            for frontier in selected_frontier :#& action_state == 1  or action_state == 4 or action_state == 3:   
                 if frontier == visited_frontier:
                     continue #skiip the frontier
                 
@@ -368,28 +369,25 @@ class CaveExplorer:
                     
                     if action_state == 3 :#actionlib.GoalStatus.SUCCEEDED:
                         print("Successfully reached the frontier!")
-                        visited_frontier.add(frontier)
+                        visited_frontier.add(tuple(frontier))
                         if frontier in frontiers:
-                            frontiers.remove(frontier)  
-                        break # move to next frontier
+                            frontiers.remove(tuple(frontier))  
+                         # move to next frontier
                     
                     elif action_state == 4 or action_state == 5:#actionlib.GoalStatus.REJECTED:
-                        visited_frontier.add(frontier)
+                        visited_frontier.add(tuple(frontier))
                         if frontier in frontiers:
-                            frontiers.remove(frontier)
+                            frontiers.remove(tuple(frontier))
                         rospy.loginfo('Goal rejected')
-                        break
                     
                     if (rospy.Time.now() - start_time).to_sec() > 10:
                         rospy.loginfo('Time out goal aborted')
-                        visited_frontier.add(frontier)
+                        visited_frontier.add(tuple(frontier))
                         if frontier in frontiers:
-                            frontiers.remove(frontier)
-                        break
-                # if action_state == [3] or (rospy.Time.now() - start_time).to_sec() > 10:
-                #     break # to re identify frontiers
-            
-        
+                            frontiers.remove(tuple(frontier))
+                        
+                    
+                    
         rospy.sleep(1)     
 
                 #   if success:
@@ -443,10 +441,40 @@ class CaveExplorer:
     
     def select_nearest_frontier(self, frontiers):
         if frontiers:
-            frontiers.sort(key=self.compute_distance)
-            return frontiers
+            frontiers_merged= self.merge_close_frontiers_to_one(frontiers)
+            frontiers_merged.sort(key=self.compute_distance)
+            rospy.loginfo(f'Frontiers sorted: {len(frontiers_merged)}')
+            # print ( 'frontiers sorted')
+            return frontiers_merged
         return None
     
+    def merge_close_frontiers_to_one(self, frontiers):
+        merged_frontiers = []
+        threshold_distance = 30  # Distance threshold to consider frontiers as close
+
+        while frontiers:
+            # Select a random frontier
+            random_frontier = random.choice(frontiers)
+            frontiers.remove(random_frontier)
+
+            # Find close frontiers to the selected random frontier
+            close_frontiers = [random_frontier]
+            for frontier in frontiers[:]:
+                if self.compute_distance_between_points(random_frontier, frontier) < threshold_distance:
+                    close_frontiers.append(frontier)
+                    frontiers.remove(frontier)
+
+            # Merge the close frontiers into one
+            if close_frontiers:
+                avg_x = sum(f[0] for f in close_frontiers) / len(close_frontiers)
+                avg_y = sum(f[1] for f in close_frontiers) / len(close_frontiers)
+                merged_frontiers.append([avg_x, avg_y])
+
+        return merged_frontiers
+
+    def compute_distance_between_points(self, point1, point2):
+        return np.sqrt((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2)
+        
     def compute_distance(self, frontier):
         if self.odom_:
             map_res = self.current_map_.info.resolution
