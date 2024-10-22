@@ -1,0 +1,13 @@
+path: /home/selimon/Documents/obstacle_YOLO
+train: images/train
+val: images/validation
+
+
+# Classes
+names:
+  0: alien
+  1: gemstone
+  2: sphere
+  3: crystal
+  4: mushroom
+  5: stop_sign
