@@ -28,11 +28,7 @@ class YoloImageProcessor:
         self.bridge = CvBridge()
 
         # Create a subscriber to the camera topic
-<<<<<<< HEAD
         self.image_sub = rospy.Subscriber("/detections_image", Image, self.image_callback)
-=======
-        self.image_sub = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback)
->>>>>>> c856370... Made cam_assist package
         # Create a publisher for the processed image
         self.image_pub = rospy.Publisher("/yolo_processed_image", Image, queue_size=5)
 
