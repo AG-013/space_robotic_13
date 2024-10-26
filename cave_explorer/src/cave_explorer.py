@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import rospy
 import roslib
 import math
@@ -99,7 +100,12 @@ class CaveExplorer:
 
         # Initialize YOLO model
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_ = YOLO("/home/coldwove/catkin_ws/src/space_robotic_13/cam_assist/src/test_train/yolov11s_trained_optimized.pt")
+
+        path = os.path.abspath(__file__)
+        src_dir = os.path.dirname(path)
+        parent_dir = os.path.abspath(os.path.join(src_dir, '..', '..'))
+        model_path = os.path.join(parent_dir, 'cam_assist/src/test_train/yolov11s_trained_optimized.pt')
+        self.model_ = YOLO(model_path)
         rospy.loginfo(f"Using device: {self.device_}")
 
         # Set confidence threshold
