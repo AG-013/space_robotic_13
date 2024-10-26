@@ -330,11 +330,10 @@ class CaveExplorer:
         indices_of_interest=[355, 356, 357, 358, 0, 1, 2, 3, 4] # 10 degree window
         readings_in_range = [scan_msg.ranges[i] for i in indices_of_interest]
 
+        # Check if target range is clear and suitable for a point in the graph
         for i in range(len(readings_in_range)):
             if readings_in_range[i] < distance_threshold:
-                obstructed = 1
-            
-            
+                obstructed = 1   
         if obstructed == 1:
             self.potential_node = 0
         else:
@@ -349,25 +348,30 @@ class CaveExplorer:
         node_num = len(self.nodes_)
         closest_node = 0
         
-
         pose = self.get_pose_2d()
 
+        # If no nodes exist, publish current position
         if node_num == 0:
             self.nodes_.append(Node(pose.x, pose.y, node_num, 0))
             self.publish_prm()
         else :
+            # Find closest node to current position
             for node in self.nodes_:
                 current_distance = math.sqrt((pose.x - node.x) ** 2 + (pose.y - node.y) ** 2)
                 if current_distance < distance:
                     distance = current_distance
                     closest_node = node.idx
 
+            # If the node is further than threshold, publish it
             if distance > distance_threshold:
                 self.nodes_.append(Node(pose.x, pose.y, node_num, closest_node))
                 self.publish_prm()
+
+            # Alternatively, there may be a potential node in front of the robot
             elif self.potential_node != 0:
                 distance = 9999999999
                 proximity = 0
+                # Check whether this node is suitable based on proximity to existing nodes
                 for node in self.nodes_:
                     current_distance = math.sqrt((self.potential_node.x - node.x) ** 2 + (self.potential_node.y - node.y) ** 2)
                     if current_distance < distance:
@@ -380,8 +384,10 @@ class CaveExplorer:
                     self.publish_prm()
 
     def publish_prm(self):
+        # Get number of nodes in graph
         node_num = len(self.nodes_) - 1
 
+        # Graph Point publisher
         point_marker = Marker()
         point_marker.header.frame_id = "map"  # Use the appropriate frame
         point_marker.header.stamp = rospy.Time.now()
@@ -403,6 +409,7 @@ class CaveExplorer:
         
         self.prm_graph_pub_.publish(point_marker)
 
+        # Graph Line publisher
         if node_num > 0:
             line_marker = Marker()
             line_marker.header.frame_id = "map"  # Use the appropriate frame
@@ -412,6 +419,7 @@ class CaveExplorer:
             line_marker.type = Marker.LINE_LIST
             line_marker.action = Marker.ADD
 
+            # Find all nodes that are 6 units or closer and connect them through the graph
             for node in self.nodes_:
                 current_distance = math.sqrt((self.nodes_[node_num].x - node.x) ** 2 + (self.nodes_[node_num].y - node.y) ** 2)
                 if current_distance < 6:
@@ -432,8 +440,6 @@ class CaveExplorer:
             line_marker.lifetime = rospy.Duration(0)  # Marker will not disappear
             
             self.prm_graph_pub_.publish(line_marker)
-
-        
 
     def main_loop(self):
         # Give everything time to launch
