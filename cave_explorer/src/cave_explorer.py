@@ -412,9 +412,11 @@ class CaveExplorer:
             line_marker.type = Marker.LINE_LIST
             line_marker.action = Marker.ADD
 
-            line_marker.points.append(Point(self.nodes_[node_num].x, self.nodes_[node_num].y, 0))
-            line_marker.points.append(Point(self.nodes_[self.nodes_[node_num].link].x, self.nodes_[self.nodes_[node_num].link].y, 0))
-
+            for node in self.nodes_:
+                current_distance = math.sqrt((self.nodes_[node_num].x - node.x) ** 2 + (self.nodes_[node_num].y - node.y) ** 2)
+                if current_distance < 6:
+                    line_marker.points.append(Point(self.nodes_[node_num].x, self.nodes_[node_num].y, 0))
+                    line_marker.points.append(Point(node.x, node.y, 0))
 
             line_marker.pose.orientation.x = 0.0
             line_marker.pose.orientation.y = 0.0
