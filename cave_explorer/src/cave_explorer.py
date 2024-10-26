@@ -4,6 +4,8 @@ import rospy
 import roslib
 import math
 import cv2 # OpenCV2
+import torch
+from ultralytics import YOLO
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
 from nav_msgs.srv import GetMap
@@ -90,14 +92,31 @@ class CaveExplorer:
         rospy.loginfo("move_base connected")
 
         # Publisher for the camera detections
-        self.image_detections_pub_ = rospy.Publisher('detections_image', Image, queue_size=1)
+        #self.image_detections_pub_ = rospy.Publisher('detections_image', Image, queue_size=1)
 
         # Read in computer vision model (simple starting point)
-        self.computer_vision_model_filename_ = rospy.get_param("~computer_vision_model_filename")
-        self.computer_vision_model_ = cv2.CascadeClassifier(self.computer_vision_model_filename_)
+        #self.computer_vision_model_filename_ = rospy.get_param("~computer_vision_model_filename")
+        #self.computer_vision_model_ = cv2.CascadeClassifier(self.computer_vision_model_filename_)
 
         # Subscribe to the camera topic
         self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
+
+        # Initialize YOLO model
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = YOLO("/home/coldwove/catkin_ws/src/space_robotic_13/cam_assist/src/test_train/yolov11s_trained_optimized.pt")
+        rospy.loginfo(f"Using device: {self.device}")
+
+        # Set confidence threshold
+        confidence_threshold = 0.5
+        self.confidence_threshold = confidence_threshold
+
+        # Initialize CvBridge
+        self.bridge = CvBridge()
+
+        # Create a subscriber to the camera topic
+        # self.image_sub = rospy.Subscriber("/detections_image", Image, self.image_callback)
+        # Create a publisher for the processed image
+        self.image_pub = rospy.Publisher("detections_image", Image, queue_size=5)
 
 
     def get_pose_2d(self):
@@ -124,48 +143,41 @@ class CaveExplorer:
 
 
     def image_callback(self, image_msg):
-        # This method is called when a new RGB image is received
-        # Use this method to detect artifacts of interest
-        #
-        # A simple method has been provided to begin with for detecting stop signs (which is not what we're actually looking for) 
-        # adapted from: https://www.geeksforgeeks.org/detect-an-object-with-opencv-python/
+        try:
+            # Convert the ROS image message to a CV2 image
+            cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
+        except CvBridgeError as e:
+            rospy.logerr(f"CvBridge Error: {e}")
+            return
 
-        # Copy the image message to a cv image
-        # see http://wiki.ros.org/cv_bridge/Tutorials/ConvertingBetweenROSImagesAndOpenCVImagesPython
-        image = self.cv_bridge_.imgmsg_to_cv2(image_msg, desired_encoding='passthrough')
+        # Process the image using YOLO
+        results = self.model(cv_image, device=self.device, imgsz=(480, 384))
 
-        # Create a grayscale version, since the simple model below uses this
-        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Draw bounding boxes on the image
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                confidence = box.conf[0].item()  # Confidence score
 
-        # Retrieve the pre-trained model
-        stop_sign_model = self.computer_vision_model_
+                # Only process boxes with confidence above the threshold
+                if confidence >= self.confidence_threshold:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    label = box.cls[0].item()  # Class label
 
-        # Detect artifacts in the image
-        # The minSize is used to avoid very small detections that are probably noise
-        detections = stop_sign_model.detectMultiScale(image, minSize=(20,20))
+                    # Draw rectangle and label
+                    cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(cv_image, f"{label}: {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # You can set "artifact_found_" to true to signal to "main_loop" that you have found a artifact
-        # You may want to communicate more information
-        # Since the "image_callback" and "main_loop" methods can run at the same time you should protect any shared variables
-        # with a mutex
-        # "artifact_found_" doesn't need a mutex because it's an atomic
-        num_detections = len(detections)
+        # Convert the modified CV2 image back to a ROS Image message
+        try:
+            processed_msg = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
+        except CvBridgeError as e:
+            rospy.logerr(f"CvBridge Error: {e}")
+            return
 
-        if num_detections > 0:
-            self.artifact_found_ = True
-        else:
-            self.artifact_found_ = False
-
-        # Draw a bounding box rectangle on the image for each detection
-        for(x, y, width, height) in detections:
-            cv2.rectangle(image, (x, y), (x + height, y + width), (0, 255, 0), 5)
-
-        # Publish the image with the detection bounding boxes
-        image_detection_message = self.cv_bridge_.cv2_to_imgmsg(image, encoding="rgb8")
-        self.image_detections_pub_.publish(image_detection_message)
-
-        rospy.loginfo('image_callback')
-        rospy.loginfo('artifact_found_: ' + str(self.artifact_found_))
+        # Publish the processed image
+        self.image_pub.publish(processed_msg)
+        rospy.loginfo("Published processed image")
 
 
     def planner_move_forwards(self, action_state):
