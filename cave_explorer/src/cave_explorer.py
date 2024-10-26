@@ -92,32 +92,19 @@ class CaveExplorer:
         rospy.loginfo("move_base connected")
 
         # Publisher for the camera detections
-        #self.image_detections_pub_ = rospy.Publisher('detections_image', Image, queue_size=1)
-
-        # Read in computer vision model (simple starting point)
-        #self.computer_vision_model_filename_ = rospy.get_param("~computer_vision_model_filename")
-        #self.computer_vision_model_ = cv2.CascadeClassifier(self.computer_vision_model_filename_)
+        self.image_pub_ = rospy.Publisher("detections_image", Image, queue_size=5)
 
         # Subscribe to the camera topic
         self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
 
         # Initialize YOLO model
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = YOLO("/home/coldwove/catkin_ws/src/space_robotic_13/cam_assist/src/test_train/yolov11s_trained_optimized.pt")
-        rospy.loginfo(f"Using device: {self.device}")
+        self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_ = YOLO("/home/coldwove/catkin_ws/src/space_robotic_13/cam_assist/src/test_train/yolov11s_trained_optimized.pt")
+        rospy.loginfo(f"Using device: {self.device_}")
 
         # Set confidence threshold
         confidence_threshold = 0.5
         self.confidence_threshold = confidence_threshold
-
-        # Initialize CvBridge
-        self.bridge = CvBridge()
-
-        # Create a subscriber to the camera topic
-        # self.image_sub = rospy.Subscriber("/detections_image", Image, self.image_callback)
-        # Create a publisher for the processed image
-        self.image_pub = rospy.Publisher("detections_image", Image, queue_size=5)
-
 
     def get_pose_2d(self):
 
@@ -143,15 +130,17 @@ class CaveExplorer:
 
 
     def image_callback(self, image_msg):
+        classes=["Alien", "Mineral", "Orb", "Ice", "Muschroom", "Stop Sign"]
+
         try:
             # Convert the ROS image message to a CV2 image
-            cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
+            cv_image = self.cv_bridge_.imgmsg_to_cv2(image_msg, "bgr8")
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
             return
 
         # Process the image using YOLO
-        results = self.model(cv_image, device=self.device, imgsz=(480, 384))
+        results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
 
         # Draw bounding boxes on the image
         for result in results:
@@ -162,21 +151,22 @@ class CaveExplorer:
                 # Only process boxes with confidence above the threshold
                 if confidence >= self.confidence_threshold:
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    label = box.cls[0].item()  # Class label
+                    class_id = int(box.cls.item())  # Get the class ID from the tensor
+                    label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
 
                     # Draw rectangle and label
                     cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(cv_image, f"{label}: {confidence:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         # Convert the modified CV2 image back to a ROS Image message
         try:
-            processed_msg = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
+            processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
             return
 
         # Publish the processed image
-        self.image_pub.publish(processed_msg)
+        self.image_pub_.publish(processed_msg)
         rospy.loginfo("Published processed image")
 
 
