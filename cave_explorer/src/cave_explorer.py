@@ -46,11 +46,20 @@ def pose2d_to_pose(pose_2d):
     pose.position.x = pose_2d.x
     pose.position.y = pose_2d.y
 
-    pose.orientation.w = math.cos(pose_2d.theta)
+    pose.orientation.w = math.cos(pose_2d.theta / 2.0)
     pose.orientation.z = math.sin(pose_2d.theta / 2.0)
 
     return pose
 
+class Node:
+    def __init__(self, x, y, idx):
+
+        # Index of the node in the graph
+        self.idx = idx
+
+        # Position of node
+        self.x = x
+        self.y = y
 
 class PlannerType(Enum):
     ERROR = 0
@@ -115,6 +124,8 @@ class CaveExplorer:
         self.confidence_threshold = confidence_threshold
 
         self.prm_graph_pub_ = rospy.Publisher('prm_graph', Marker, queue_size=10)
+
+        self.nodes_ = []
 
     def get_pose_2d(self):
 
@@ -306,31 +317,44 @@ class CaveExplorer:
             rospy.loginfo('Sending goal...')
             self.move_base_action_client_.send_goal(action_goal.goal)
 
-    def publish_point(self):
+    def update_prm(self):
+        distance_threshold = 4
+        distance = distance_threshold + 1
+        node_num = len(self.nodes_)
+
+        pose = self.get_pose_2d()
+
+        for node in self.nodes_:
+            current_distance = math.sqrt((pose.x - node.x) ** 2 + (pose.y - node.y) ** 2)
+            if current_distance < distance:
+                distance = current_distance
         
-            marker = Marker()
-            marker.header.frame_id = "map"  # Use the appropriate frame
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "points"
-            marker.id = 0
-            marker.type = Marker.SPHERE
-            marker.action = Marker.ADD
+        if distance > distance_threshold:
+            self.nodes_.append(Node(pose.x, pose.y, node_num))
+            self.publish_prm()
 
-            marker.pose.position = Point(20, 20, 0.0)  # Set your desired point here
-            marker.pose.orientation.w = 1.0  # No rotation
-            marker.scale.x = 1  # Sphere radius
-            marker.scale.y = 1
-            marker.scale.z = 1
+    def publish_prm(self):
+        node_num = len(self.nodes_)
 
-            marker.color.r = 1.0  # Red
-            marker.color.g = 0.0
-            marker.color.b = 0.0
-            marker.color.a = 1.0  # Alpha (opacity)
+        marker = Marker()
+        marker.header.frame_id = "map"  # Use the appropriate frame
+        #marker.header.stamp = rospy.Time.now()
+        #marker.ns = "points"
+        marker.id = node_num
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
 
-            marker.lifetime = rospy.Duration(0)  # Marker will not disappear
-
-            self.prm_graph_pub_.publish(marker)
-            rospy.sleep(1)
+        marker.pose.position = Point(self.nodes_[node_num - 1].x, self.nodes_[node_num - 1].y, self.nodes_[node_num -1].idx)  # Set your desired point here
+        marker.pose.orientation.w = 1.0  # No rotation
+        marker.scale.x = 1  # Sphere radius
+        marker.scale.y = 1
+        marker.scale.z = 1
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0  # Alpha (opacity)
+        marker.lifetime = rospy.Duration(0)  # Marker will not disappear
+        self.prm_graph_pub_.publish(marker)
 
     def main_loop(self):
 
@@ -383,7 +407,8 @@ class CaveExplorer:
 
 
             #######################################################
-            self.publish_point()
+            self.update_prm()
+            
 
             #######################################################
             # Delay so the loop doesn't run too fast
