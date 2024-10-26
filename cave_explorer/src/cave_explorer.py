@@ -25,6 +25,8 @@ import random
 import copy
 from threading import Lock
 from enum import Enum
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 
 
 
@@ -111,6 +113,8 @@ class CaveExplorer:
         # Set confidence threshold
         confidence_threshold = 0.5
         self.confidence_threshold = confidence_threshold
+
+        self.prm_graph_pub_ = rospy.Publisher('prm_graph', Marker, queue_size=10)
 
     def get_pose_2d(self):
 
@@ -302,6 +306,32 @@ class CaveExplorer:
             rospy.loginfo('Sending goal...')
             self.move_base_action_client_.send_goal(action_goal.goal)
 
+    def publish_point(self):
+        
+            marker = Marker()
+            marker.header.frame_id = "map"  # Use the appropriate frame
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "points"
+            marker.id = 0
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+
+            marker.pose.position = Point(20, 20, 0.0)  # Set your desired point here
+            marker.pose.orientation.w = 1.0  # No rotation
+            marker.scale.x = 1  # Sphere radius
+            marker.scale.y = 1
+            marker.scale.z = 1
+
+            marker.color.r = 1.0  # Red
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0  # Alpha (opacity)
+
+            marker.lifetime = rospy.Duration(0)  # Marker will not disappear
+
+            self.prm_graph_pub_.publish(marker)
+            rospy.sleep(1)
+
     def main_loop(self):
 
         while not rospy.is_shutdown():
@@ -351,6 +381,9 @@ class CaveExplorer:
             elif self.planner_type_ == PlannerType.RANDOM_GOAL:
                 self.planner_random_goal(action_state)
 
+
+            #######################################################
+            self.publish_point()
 
             #######################################################
             # Delay so the loop doesn't run too fast
