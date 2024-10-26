@@ -42,7 +42,7 @@ def pose2d_to_pose(pose_2d):
     pose.position.x = pose_2d.x
     pose.position.y = pose_2d.y
 
-    pose.orientation.w = math.cos(pose_2d.theta)
+    pose.orientation.w = math.cos(pose_2d.theta / 2.0)
     pose.orientation.z = math.sin(pose_2d.theta / 2.0)
 
     return pose
@@ -57,6 +57,19 @@ class PlannerType(Enum):
     RANDOM_GOAL = 5
     EXPLORATION = 6
     # Add more!
+    
+class ExplorationsState(Enum):
+    ERROR = 0
+    WAITING_FOR_MAP = 1
+    IDENTIFYING_FRONTIERS = 2
+    SELECTING_FRONTIER = 3
+    MOVING_TO_FRONTIER = 4
+    HANDLE_REACHED_FRONTIER = 5
+    HANDLE_REJECTED_FRONTIER = 6
+    HANDLE_TIMEOUT = 7
+    OBJECT_IDENTIFIED = 8
+    SCANNING_OBJECT = 9
+    EXPLORED_MAP = 10
 
 class CaveExplorer:
     def __init__(self):
@@ -71,6 +84,9 @@ class CaveExplorer:
         self.returned_home_ = False
         self.goal_counter_ = 0 # gives each goal sent to move_base a unique ID
         self.exploration_done_ = False
+        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        self.visited_frontiers = set()
+        
         # Initialise CvBridge
         self.cv_bridge_ = CvBridge()
 
@@ -109,6 +125,7 @@ class CaveExplorer:
         self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.odom_ = None
 
+        # map service
     def get_pose_2d(self):
 
         # Lookup the latest transform
@@ -133,181 +150,19 @@ class CaveExplorer:
 
 
     def image_callback(self, image_msg):
-        # This method is called when a new RGB image is received
-        # Use this method to detect artifacts of interest
-        #
-        # A simple method has been provided to begin with for detecting stop signs (which is not what we're actually looking for) 
-        # adapted from: https://www.geeksforgeeks.org/detect-an-object-with-opencv-python/
-
-        # Copy the image message to a cv image
-        # # see http://wiki.ros.org/cv_bridge/Tutorials/ConvertingBetweenROSImagesAndOpenCVImagesPython
-        # image = self.cv_bridge_.imgmsg_to_cv2(image_msg, desired_encoding='passthrough')
-
-        # # Create a grayscale version, since the simple model below uses this
-        # image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # # Retrieve the pre-trained model
-        # stop_sign_model = self.computer_vision_model_
-
-        # # Detect artifacts in the image
-        # # The minSize is used to avoid very small detections that are probably noise
-        # detections = stop_sign_model.detectMultiScale(image, minSize=(20,20))
-
-        # # You can set "artifact_found_" to true to signal to "main_loop" that you have found a artifact
-        # # You may want to communicate more information
-        # # Since the "image_callback" and "main_loop" methods can run at the same time you should protect any shared variables
-        # # with a mutex
-        # # "artifact_found_" doesn't need a mutex because it's an atomic
-        # num_detections = len(detections)
-
-        # if num_detections > 0:
-        #     self.artifact_found_ = True
-        # else:
-        #     self.artifact_found_ = False
-
-        # # Draw a bounding box rectangle on the image for each detection
-        # for(x, y, width, height) in detections:
-        #     cv2.rectangle(image, (x, y), (x + height, y + width), (0, 255, 0), 5)
-
-        # # Publish the image with the detection bounding boxes
-        # image_detection_message = self.cv_bridge_.cv2_to_imgmsg(image, encoding="rgb8")
-        # self.image_detections_pub_.publish(image_detection_message)
-
-        # rospy.loginfo('image_callback')
-        # rospy.loginfo('artifact_found_: ' + str(self.artifact_found_))
         pass
 
 
-    def planner_move_forwards(self, action_state):
-        # Simply move forward by 10m
-
-        # Only send this once before another action
-        if action_state == actionlib.GoalStatus.LOST:
-
-            pose_2d = self.get_pose_2d()
-
-            rospy.loginfo('Current pose: ' + str(pose_2d.x) + ' ' + str(pose_2d.y) + ' ' + str(pose_2d.theta))
-
-            # Move forward 10m
-            pose_2d.x += 10 * math.cos(pose_2d.theta)
-            pose_2d.y += 10 * math.sin(pose_2d.theta)
-
-            rospy.loginfo('Target pose: ' + str(pose_2d.x) + ' ' + str(pose_2d.y) + ' ' + str(pose_2d.theta))
-
-            # Send a goal to "move_base" with "self.move_base_action_client_"
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-
-
-    def planner_go_to_first_artifact(self, action_state):
-        # Go to a pre-specified artifact (alien) location
-
-        # Only send this if not already going to a goal
-        if action_state != actionlib.GoalStatus.ACTIVE:
-
-            # Select a pre-specified goal location
-            pose_2d = Pose2D()
-            pose_2d.x = 18.0
-            pose_2d.y = 25.0
-            pose_2d.theta = -math.pi/2
-
-            # Send a goal to "move_base" with "self.move_base_action_client_"
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-
-
-
-    def planner_return_home(self, action_state):
-        # Go to the origin
-
-        # Only send this if not already going to a goal
-        if action_state != actionlib.GoalStatus.ACTIVE:
-
-            # Select a pre-specified goal location
-            pose_2d = Pose2D()
-            pose_2d.x = 0
-            pose_2d.y = 0
-            pose_2d.theta = 0
-
-            # Send a goal to "move_base" with "self.move_base_action_client_"
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-
-    def planner_random_walk(self, action_state):
-        # Go to a random location, which may be invalid
-
-        min_x = -5
-        max_x = 50
-        min_y = -5
-        max_y = 50
-
-        # Only send this if not already going to a goal
-        if action_state != actionlib.GoalStatus.ACTIVE:
-
-            # Select a random location
-            pose_2d = Pose2D()
-            pose_2d.x = random.uniform(min_x, max_x)
-            pose_2d.y = random.uniform(min_y, max_y)
-            pose_2d.theta = random.uniform(0, 2*math.pi)
-
-            # Send a goal to "move_base" with "self.move_base_action_client_"
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-
-    def planner_random_goal(self, action_state):
-        # Go to a random location out of a predefined set
-
-        # Hand picked set of goal locations
-        random_goals = [[53.3,40.7],[44.4, 13.3],[2.3, 33.4],[9.9, 37.3],[3.4, 18.5],[6.0, 0.4],[28.3, 11.8],[43.7, 12.8],[38.9,43.0],[47.4,4.7],[31.5,3.2],[36.6,32.5]]
-
-        # Only send this if not already going to a goal
-        if action_state != actionlib.GoalStatus.ACTIVE:
-
-            # Select a random location
-            idx = random.randint(0,len(random_goals)-1)
-            pose_2d = Pose2D()
-            pose_2d.x = random_goals[idx][0]
-            pose_2d.y = random_goals[idx][1]
-            pose_2d.theta = random.uniform(0, 2*math.pi)
-
-            # Send a goal to "move_base" with "self.move_base_action_client_"
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal_id = self.goal_counter_
-            self.goal_counter_ = self.goal_counter_ + 1
-            action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
-
-            rospy.loginfo('Sending goal...')
-            self.move_base_action_client_.send_goal(action_goal.goal)
-    
     def map_callback(self, map_msg):
-        # This method is called when a new map is received
-        # rospy.loginfo("Map received")
-        self.current_map_ = map_msg
+        if self.current_map_ is None:
+            rospy.loginfo("Map received")
+            self.current_map_ = map_msg  
+        elif self.current_map_.header.stamp != map_msg.header.stamp:
+            rospy.loginfo("Map updated")
+            self.current_map_ = map_msg
+        else:
+            rospy.loginfo("Map not updated")
+                    
         
     def odom_callback(self,odom_sub_):
         # Extract position data
@@ -327,86 +182,93 @@ class CaveExplorer:
         angular = self.odom_.twist.twist.angular
         
 
-
-    def exploration_planner(self, action_state):      
-        # frontier based exploration planner 
-        # acquire the current map
+    
+    def exploration_planner(self, action_state):
         if action_state != actionlib.GoalStatus.ACTIVE:
-            while self.current_map_ is None:
-                rospy.logwarn("Map not available yet, waiting for map...")
-                rospy.sleep(1.0)  # Wait for the map to be received
-                continue  # Keep waiting until the map is received
-                
-            # load the current map
-            current_map = self.current_map_
-            print ( ' map acquired')
-                
-            #  Identify frontiers
-            frontiers = self.identify_frontiers(current_map)
-            if not frontiers:
-                rospy.loginfo('No frontiers found!............')
+            print('Exploration planner ............')
+            if self.exploration_state_ == ExplorationsState.WAITING_FOR_MAP:
+                self.handle_waiting_for_map()
 
-            # Select the best frontier to explore
-            print (f'frontiers found : {len(frontiers)}')
-            selected_frontier = self.select_nearest_frontier(frontiers)
-            print (f'new frontiers selected : {selected_frontier[0]}')
-            # 
-            visited_frontier = set()
-            if selected_frontier is None:
-                rospy.logwarn('No frontier selected')
-                return
+            elif self.exploration_state_ == ExplorationsState.IDENTIFYING_FRONTIERS:
+                self.handle_identifying_frontiers()
+
+            elif self.exploration_state_ == ExplorationsState.SELECTING_FRONTIER:
+                self.handle_selecting_frontier()
+
+            elif self.exploration_state_ == ExplorationsState.MOVING_TO_FRONTIER:
+                self.handle_moving_to_frontier(action_state)
+
+            elif self.exploration_state_ == ExplorationsState.HANDLE_REJECTED_FRONTIER:
+                self.handle_selecting_frontier()
+                
+            elif self.exploration_state_ == ExplorationsState.HANDLE_TIMEOUT:
+                self.handle_timeout()
+
+            elif self.exploration_state_ == ExplorationsState.EXPLORED_MAP:
+                rospy.loginfo("Exploration completed successfully.")
+
+    def handle_waiting_for_map(self):
+        while self.current_map_ is None:
+            rospy.logwarn("Map not available yet, waiting for map...")
+            rospy.sleep(1.0)  # Wait for the map to be received
+            continue  # Keep waiting until the map is received
+        # load the current map
+        current_map = self.current_map_
+        print ( ' map acquired')  
+        self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
+        print ( 'state changed to identifying frontiers')
+
+    def handle_identifying_frontiers(self):
+        print ( 'identifying frontiers')
+        frontiers = self.identify_frontiers(self.current_map_)
+        if not frontiers:
+            rospy.loginfo('No frontiers found!')
+            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
+        else:
+            self.exploration_state_ = ExplorationsState.SELECTING_FRONTIER
+
+    def handle_selecting_frontier(self):
+        self.selected_frontier = None
+        frontiers = self.identify_frontiers(self.current_map_)
+        rospy.loginfo(f'Frontiers: {len(frontiers)}')
+        rospy.loginfo(f'Frontiers after min dist select: {len(frontiers)}')
+        self.selected_frontier = self.select_nearest_frontier(frontiers)
+        if self.selected_frontier is None:
+            rospy.logwarn('No frontier selected.')
+            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
+        else:
             
-            for frontier in selected_frontier :#& action_state == 1  or action_state == 4 or action_state == 3:   
-                if frontier == visited_frontier:
-                    continue #skiip the frontier
-                
-                #access next frontier
-                self.move_to_frontier(frontier)
-                print (f'frontier sent.... : {frontier}')
-                start_time = rospy.Time.now()
-                while True:
-                    action_state = self.move_base_action_client_.get_state()
-                    
-                    if action_state == 3 :#actionlib.GoalStatus.SUCCEEDED:
-                        print("Successfully reached the frontier!")
-                        visited_frontier.add(tuple(frontier))
-                        if frontier in frontiers:
-                            frontiers.remove(tuple(frontier))  
-                         # move to next frontier
-                    
-                    elif action_state == 4 or action_state == 5:#actionlib.GoalStatus.REJECTED:
-                        visited_frontier.add(tuple(frontier))
-                        if frontier in frontiers:
-                            frontiers.remove(tuple(frontier))
-                        rospy.loginfo('Goal rejected')
-                    
-                    if (rospy.Time.now() - start_time).to_sec() > 10:
-                        rospy.loginfo('Time out goal aborted')
-                        visited_frontier.add(tuple(frontier))
-                        if frontier in frontiers:
-                            frontiers.remove(tuple(frontier))
-                        
-                    
-                    
-        rospy.sleep(1)     
+            rospy.loginfo('Frontier selected')
+            self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
 
-                #   if success:
-                #       rospy.loginfo(f'Successfully moved to frontier: {frontier}')
-                #       frontiers.remove(frontier)
-                #       frontier = None
-                #       print (f'frontier: {frontier}')
-                      
-                #       if not frontiers:
-                #           rospy.loginfo('No new frontiers found !!!! EXPLORATION COMPLETED') 
-                    
-                # check if reachable 
-                # if not reachable, send next frontier
-                # wait for goal to be reached
-                #send next frontier
-                
-                # send the fiirtst frontirer goal wait for it to reach there 
-                # do a re scan and re make frontiers now send the most highest frontier 
+    def handle_moving_to_frontier(self, action_state):
+        for frontier in self.selected_frontier:
+            if tuple(frontier) in self.visited_frontiers:
+                continue # Skip the frontier if it has already been visited
+        
+            self.move_to_frontier(frontier)
+            rospy.loginfo('Moving to frontier')
+            start_time = rospy.Time.now()
+            removed_frontier = self.selected_frontier.pop(0)
+            self.visited_frontiers = self.visited_frontiers.union({tuple(removed_frontier)})
 
+            action_state = self.move_base_action_client_.get_state()
+            print ( ' check action state')
+            if action_state == actionlib.GoalStatus.SUCCEEDED:
+                    rospy.loginfo("Successfully reached the frontier!")
+                    self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        
+            elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
+                    rospy.loginfo("Goal rejected or aborted.")
+                    # self.visited_frontiers.add(tuple(frontier))
+                    frontier = None
+                    self.exploration_state_ = ExplorationsState.HANDLE_REJECTED_FRONTIER
+            elif rospy.Time.now() - start_time > rospy.Duration(10):  # Timeout after 10 seconds
+                rospy.loginfo("Timeout reached.")
+                self.exploration_state_ = ExplorationsState.HANDLE_TIMEOUT
+                
+                rospy.sleep(0.1)
+                                        
     def identify_frontiers(self, current_map): 
         frontiers = []
        # Extract map dimensions and data
@@ -441,7 +303,9 @@ class CaveExplorer:
     
     def select_nearest_frontier(self, frontiers):
         if frontiers:
+            rospy.loginfo(f'Frontiers found: {len(frontiers)}')
             frontiers_merged= self.merge_close_frontiers_to_one(frontiers)
+            rospy.loginfo(f'Frontiers merged: {len(frontiers_merged)}')
             frontiers_merged.sort(key=self.compute_distance)
             rospy.loginfo(f'Frontiers sorted: {len(frontiers_merged)}')
             # print ( 'frontiers sorted')
@@ -485,6 +349,7 @@ class CaveExplorer:
             distance = np.sqrt((self.current_position.x - frontier_x) ** 2 + (self.current_position.y - frontier_y) ** 2)
             return distance
         return float('inf')
+        
     
     def move_to_frontier(self, frontier):
         map_resolution = self.current_map_.info.resolution
@@ -510,8 +375,12 @@ class CaveExplorer:
             # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
             
-    
-
+    def handle_timeout(self):
+        rospy.loginfo("Timeout reached.")
+        self.current_map_ = None
+        self.selected_frontier = None
+        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        
     def index_to_position(self, index):
         # Convert the index of the grid cell to a (x, y) position in the map
         width = self.current_map_.info.width
@@ -538,25 +407,13 @@ class CaveExplorer:
             
             if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
                 print("Successfully explored!")
-                # self.exploration_done_ = 1
-            # if (self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-            #     print("Successfully reached first artifact!")
-            #     self.reached_first_artifact_ = True
-            # if (self.planner_type_ == PlannerType.RETURN_HOME) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-            #     print("Successfully returned home!")
-            #     self.returned_home_ = True
+                self.exploration_done_ = True
 
             #######################################################
             # Select the next planner to execute
-            # Update this logic as you see fit!
+            # Update this logic as you see fi   t!
             if not self.exploration_done_:
                 self.planner_type_ = PlannerType.EXPLORATION
-            # elif not self.reached_first_artifact_:
-            #     self.planner_type_ = PlannerType.GO_TO_FIRST_ARTIFACT
-            # elif not self.returned_home_:
-            #     self.planner_type_ = PlannerType.RETURN_HOME
-            # else:
-            #     self.planner_type_ = PlannerType.RANDOM_GOAL
 
 
             #######################################################
@@ -566,17 +423,6 @@ class CaveExplorer:
             print("Calling planner:", self.planner_type_.name)
             if self.planner_type_ == PlannerType.EXPLORATION:
                 self.exploration_planner(action_state)
-            # elif self.planner_type_ == PlannerType.MOVE_FORWARDS:
-            #     self.planner_move_forwards(action_state)
-            # elif self.planner_type_ == PlannerType.GO_TO_FIRST_ARTIFACT:
-            #     self.planner_go_to_first_artifact(action_state)
-            # elif self.planner_type_ == PlannerType.RETURN_HOME:
-            #     self.planner_return_home(action_state)
-            # elif self.planner_type_ == PlannerType.RANDOM_WALK:
-            #     self.planner_random_walk(action_state)
-            # elif self.planner_type_ == PlannerType.RANDOM_GOAL:
-            #     self.planner_random_goal(action_state)
-
 
             #######################################################
             # Delay so the loop doesn't run too fast
