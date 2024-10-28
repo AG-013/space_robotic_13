@@ -271,7 +271,7 @@ class CaveExplorer:
             self.visited_frontiers.add(tuple(removed_frontier))
 
             # Continuously check the state while moving toward the goal
-            while rospy.Time.now() - start_time < rospy.Duration(10):  # 10-second timeout
+            while rospy.Time.now() - start_time < rospy.Duration(15):  # 10-second timeout
                 action_state = self.move_base_action_client_.get_state()
 
                 # Check if the goal has been reached successfully
@@ -285,16 +285,12 @@ class CaveExplorer:
                     rospy.loginfo("Goal rejected or aborted.")
                     self.exploration_state_ = ExplorationsState.HANDLE_REJECTED_FRONTIER
                     break  # Break out of the inner loop to attempt the next frontier
-
-                # Sleep briefly to avoid overloading the loop
-                rospy.sleep(0.1)
-
+                
             # If the loop ends due to timeout, handle the timeout case
             if rospy.Time.now() - start_time >= rospy.Duration(15):
                 rospy.loginfo("Timeout reached.")
-                action_state = actionlib.GoalStatus.SUCCEEDED
                 self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-                return  # Stop processing further frontiers in this call
+                break  # Stop processing further frontiers in this call
 
         # Check if no more frontiers are available
         if not self.selected_frontier:
@@ -457,6 +453,10 @@ class CaveExplorer:
             if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
                 print("Successfully explored!")
                 self.exploration_done_ = True
+            elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE):
+                print("Exploration preempted!")
+                self.exploration_done_ = False
+                action_state = actionlib.GoalStatus.PREEMPTING
 
             #######################################################
             # Select the next planner to execute
@@ -470,7 +470,7 @@ class CaveExplorer:
             # The methods send a goal to "move_base" with "self.move_base_action_client_"
             # Add your own planners here!
             print("Calling planner:", self.planner_type_.name)
-            if self.planner_type_ == PlannerType.EXPLORATION:
+            if self.planner_type_ == PlannerType.EXPLORATION: 
                 self.exploration_planner(action_state)
 
             #######################################################
