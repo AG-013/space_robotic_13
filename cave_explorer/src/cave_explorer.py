@@ -67,9 +67,8 @@ class ExplorationsState(Enum):
     HANDLE_REACHED_FRONTIER = 5
     HANDLE_REJECTED_FRONTIER = 6
     HANDLE_TIMEOUT = 7
-    OBJECT_IDENTIFIED = 8
-    SCANNING_OBJECT = 9
-    EXPLORED_MAP = 10
+    OBJECT_IDENTIFIED_SCAN = 8
+    EXPLORED_MAP = 9
 
 class CaveExplorer:
     def __init__(self):
@@ -150,6 +149,8 @@ class CaveExplorer:
 
 
     def image_callback(self, image_msg):
+        # object identified
+        self.exploration_planner(ExplorationsState.OBJECT_IDENTIFIED_SCAN)
         pass
 
 
@@ -212,6 +213,25 @@ class CaveExplorer:
 
             elif self.exploration_state_ == ExplorationsState.EXPLORED_MAP:
                 rospy.loginfo("Exploration completed successfully.")
+            elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
+                rospy.loginfo("Object identified.")
+                self.object_identified_scan()
+                
+    def object_identified_scan(self):
+        # Stop the robot
+        twist = Twist()
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+        self.cmd_vel_pub_.publish(twist)
+        
+        # identify object coordinates and move towards it
+        # align so that the object is in the center of the camera
+        # move towards the object and 
+        
+
+
+        # Return to the exploration state
+        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
 
     def handle_waiting_for_map(self):
         print ( 'waiting for map.....')
@@ -341,6 +361,12 @@ class CaveExplorer:
             
         # rospy.loginfo(f'Frontiers found: {len(frontiers)}')
         frontiers_merged= self.merge_close_frontiers_to_one(frontiers)
+        
+        ### use a weighted frontier selection process 
+         ### based on distance alpha 1 , - size of frontier alpha 2, + orientation towards the frontier alpha 3
+         ## alpha 1 = 0.5, alpha 2 = 0.3, alpha 3 = 0.2
+        
+        
         # rospy.loginfo(f'Frontiers merged: {len(frontiers_merged)}')
         # frontiers_merged.sort(key=self.compute_distance)
         # print ( f'frontiers sorted distance: {len(frontiers_merged)}')
