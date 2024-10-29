@@ -311,26 +311,26 @@ class CaveExplorer:
             self.main_loop()
             rospy.sleep(0.5)
 
-                                        
-        
-
     def handle_waiting_for_map(self):
         print ( 'waiting for map.....')
         while self.current_map_ is None:
             rospy.logwarn("Map not available yet, waiting for map...")
             rospy.sleep(1.0)  # Wait for the map to be received
             continue  # Keep waiting until the map is received
-        # load the current map
-        current_map = self.current_map_
-        print ( ' map acquired')  
-        self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
-        print ( 'state changed to identifying frontiers')
+        else:
+            current_map = self.current_map_
+            rospy.loginfo("Map acquired!")
+            self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
+            print ( 'state changed to identifying frontiers')
     
 
     def handle_identifying_frontiers(self):
         print ( 'identifying frontiers,,,,,')
         frontiers = self.identify_frontiers(self.current_map_)
         if not frontiers:
+            
+            # change to no valid frontiers found
+            
             rospy.loginfo('No frontiers found!')
             self.exploration_state_ = ExplorationsState.EXPLORED_MAP
         else:
@@ -351,10 +351,6 @@ class CaveExplorer:
             
             rospy.loginfo('Frontier selected')
             self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
-
-
-
-            
             
     def handle_timeout(self):
         rospy.loginfo("Timeout reached.")
@@ -394,7 +390,6 @@ class CaveExplorer:
         if row < height-1: neighbors.append((row+1, col))
         if col > 0: neighbors.append((row, col-1))
         if col < width-1: neighbors.append((row, col+1))
-        # rospy.sleep(0.0000000001)
         return neighbors
   
     
@@ -426,41 +421,8 @@ class CaveExplorer:
 
         return merged_frontiers
         
-        
-    def compute_distance(self, frontier):
-        map_res = self.current_map_.info.resolution
-        map_origin = self.current_map_.info.origin.position
-        x, y = frontier
-        frontier_x = x * map_res + map_origin.x
-        frontier_y = y * map_res + map_origin.y
-        distance = np.hypot((frontier_x - self.current_position.x ), (frontier_y - self.current_position.y ))
-        return distance
-        
-        
-    def is_valid_frontier(self, frontier_point):
-        # Check if the frontier point is far enough from all visited frontiers.
-        min_distance = 0 # Define a minimum distance threshold
-        
-        for visited_point in self.visited_frontiers:
-            # Calculate Euclidean distance between the frontier and visited point
-            distance = np.hypot((frontier_point[0] - visited_point[0]), (frontier_point[1] - visited_point[1]))
-            if distance < min_distance:
-                return False  # The frontier is too close to a visited point
-            
-        return True
-        
-    def index_to_position(self, index):
-        # Convert the index of the grid cell to a (x, y) position in the map
-        width = self.current_map_.info.width
-        resolution = self.current_map_.info.resolution
-        origin_x = self.current_map_.info.origin.position.x
-        origin_y = self.current_map_.info.origin.position.y
-        
-        x = (index % width) * resolution + origin_x
-        y = (index // width) * resolution + origin_y
-
-        
-        return Point(x, y, 0)  # Return as a Point object
+    def compute_distance_between_points(self , point1, point2):
+        return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
     def wrap_angle(self , angle):
         # Function to wrap an angle between 0 and 2*Pi
         while angle < 0.0:
@@ -483,12 +445,6 @@ class CaveExplorer:
 
         return pose
 
-
-    def compute_distance_between_points(self , point1, point2):
-        return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
-    
-           
-    
     def move_to_frontier(self, frontier):
         map_resolution = self.current_map_.info.resolution
         map_origin = self.current_map_.info.origin.position
@@ -557,7 +513,9 @@ class CaveExplorer:
                     break  # Break out of the inner loop to attempt the next frontier
                 
                 # Check if the object has been identified
-                elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
+                elif self.art_xyz is not None:
+                    # change action state to object identified
+                    self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
                     rospy.loginfo("Object identified, stopping exploration.")
                     return
                                             
@@ -583,6 +541,19 @@ class CaveExplorer:
         delta_x = float('inf')
         delta_y = float('inf')
         delta_theta = float('inf')
+
+         # Stop the robot by publishing a zero velocity Twist message
+        stop_twist = Twist()
+        stop_twist.linear.x = 0.0
+        stop_twist.linear.y = 0.0
+        stop_twist.linear.z = 0.0
+        stop_twist.angular.x = 0.0
+        stop_twist.angular.y = 0.0
+        stop_twist.angular.z = 0.0
+
+        print("Sending stop command...")
+        self.cmd_vel_pub_.publish(stop_twist)  # Publish stop message
+
 
         # Check if detected object coordinates are available
         if self.art_xyz is not None:
@@ -640,13 +611,15 @@ class CaveExplorer:
             # Wait for the goal to be executed and check the state
             goal_rejected_threshold = rospy.Duration(5)  # Define how long to wait before checking if the goal is rejected
             self.move_base_action_client_.wait_for_result(goal_rejected_threshold)
-            current_state = self.move_base_action_client_.get_state()
-
+            action_state = self.move_base_action_client_.get_state()
+            print(f"[DEBUG] Action state after waiting: {action_state}")
+            
             # Handle goal success or failure based on the current state
-            if current_state == actionlib.GoalStatus.SUCCEEDED:
+            if action_state == actionlib.GoalStatus.SUCCEEDED:
                 rospy.loginfo("Successfully reached the object!")
                 self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
-            elif current_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
+                
+            elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
                 rospy.loginfo("[DEBUG] Goal rejected or aborted. Cancelling goal and resuming exploration.")
                 self.move_base_action_client_.cancel_goal()
                 self.last_goal = None  # Clear the last goal
