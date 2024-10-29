@@ -22,6 +22,7 @@ from cv_bridge import CvBridge, CvBridgeError
 import tf
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs import point_cloud2
 from geometry_msgs.msg import Twist, Pose2D, Pose, Point
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
 import actionlib
@@ -70,6 +71,7 @@ class CaveExplorer:
         self.map_lock = threading.Lock()
         self.image_lock = threading.Lock()
 
+
         self.current_map_ = None
         self.image_data = None
 
@@ -82,6 +84,11 @@ class CaveExplorer:
 
         # Initialize CvBridge for image processing
         self.cv_bridge_ = CvBridge()
+        
+        # Variables/Flags for perception
+        self.localised_ = False
+        self.artifact_found_ = False
+
 
         # Wait for the transform from map to base_link
         rospy.loginfo("Waiting for transform from map to base_link")
@@ -93,11 +100,14 @@ class CaveExplorer:
 
         # Subscribers
         self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
+        self.depth_sub_ = rospy.Subscriber("/camera/depth/points", PointCloud2, self.depth_callback, queue_size=1)
+        
         self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
 
         # Publishers
         self.cmd_vel_pub_ = rospy.Publisher('cmd_vel', Twist, queue_size=1)
         self.image_pub_ = rospy.Publisher("/detections_image", Image, queue_size=5)
+        # self.marker_pub = rospy.Publisher('/visualization_marker', Marker, queue_size=10)  # Artifact markers
 
         # Action client for move_base
         self.move_base_action_client_ = actionlib.SimpleActionClient('move_base', MoveBaseAction)
@@ -113,10 +123,84 @@ class CaveExplorer:
         self.exploration_thread = threading.Thread(target=self.exploration_loop)
         self.exploration_thread.start()
 
+
+
+
+
+    def get_pose_2d(self):
+
+        # Lookup the latest transform
+        (trans,rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+
+        # Return a Pose2D message
+        pose = Pose2D()
+        pose.x = trans[0]
+        pose.y = trans[1]
+
+        qw = rot[3]
+        qz = rot[2]
+
+        if qz >= 0.:
+            pose.theta = wrap_angle(2. * math.acos(qw))
+        else: 
+            pose.theta = wrap_angle(-2. * math.acos(qw))
+
+        return pose
+
+
+    def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
+        # Check if data is available
+        if not self.depth_data_:
+            rospy.logwarn("Depth message not received yet!")
+            return None
+        
+        # Get current robot pose transformation
+        (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+        x, y, z = trans
+        qz = rot[2]
+        qw = rot[3]
+        
+        theta = wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
+        
+        # Create robot pose transformation
+        robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
+
+        
+        # Extract point from depth data
+        point = list(point_cloud2.read_points(
+            self.depth_data_, 
+            field_names=("x", "y", "z"), 
+            skip_nans=True, 
+            uvs=[(pixel_x, pixel_y)]
+        ))
+        
+        if point:
+            # Convert point from camera frame to robot base frame
+            old_x, old_y, old_z = point[0]
+            
+            # Transform from camera optical frame to camera frame
+            x = old_z
+            y = -old_x
+            z = -old_y
+            
+            # Create point transformation
+            point_transform = SE3.Trans(x, y, z)
+            point_in_world = robot_pos @ self.base_2_depth_cam @ point_transform
+            
+            # Extract the translation components (t) from the final transformation
+            return point_in_world.t # .t extract translational component
+
+        return None
+
+
     # Callback functions with locks #######################################################
     def image_callback(self, image_msg):
         with self.image_lock:
             self.image_data = image_msg
+            
+    def depth_callback(self, depth_msg):
+        with self.scan_lock:
+            self.depth_data_ = depth_msg
 
     def map_callback(self, map_msg):
         with self.map_lock:
