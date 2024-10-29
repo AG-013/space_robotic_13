@@ -40,7 +40,6 @@ def wrap_angle(angle):
     # Function to wrap an angle between 0 and 2*Pi
     while angle < 0.0:
         angle = angle + 2 * math.pi
-
     while angle > 2 * math.pi:
         angle = angle - 2 * math.pi
 
