@@ -1,118 +1,17 @@
-#!/usr/bin/env python3
+image_callback runs very slow.
 
-import os
-import random
-import copy
-import threading
-from enum import Enum
-import time
-
-# Math Modules
-from spatialmath import SE3
-# May have to install these packages:
-# pip install roboticstoolbox-python
-# pip install spatialmath-python
-import math
-import numpy as np
-
-# Machine Learning / OpenCV Modules
-import cv2 # OpenCV2
-import torch
-from ultralytics import YOLO
-from cv_bridge import CvBridge, CvBridgeError
-
-# ROS Modules
-import tf
-from nav_msgs.srv import GetMap
-from nav_msgs.msg import OccupancyGrid, Odometry
-from std_srvs.srv import Empty
-from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, Pose2D, Pose, Point
-from sensor_msgs.msg import Image, PointCloud2, LaserScan
-from sensor_msgs import point_cloud2
-from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
-import actionlib
-from visualization_msgs.msg import Marker
-import rospy
-import roslib
-
-
-def wrap_angle(angle):
-    # Function to wrap an angle between 0 and 2*Pi
-    while angle < 0.0:
-        angle = angle + 2 * math.pi
-
-    while angle > 2 * math.pi:
-        angle = angle - 2 * math.pi
-
-    return angle
-
-
-def pose2d_to_pose(pose_2d):
-    pose = Pose()
-
-    pose.position.x = pose_2d.x
-    pose.position.y = pose_2d.y
-
-    pose.orientation.w = math.cos(pose_2d.theta / 2.0)
-    pose.orientation.z = math.sin(pose_2d.theta / 2.0)
-
-    return pose
-
-
-def compute_distance_between_points(point1, point2):
-    return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
-    
-    
-class PlannerType(Enum):
-    ERROR = 0
-    MOVE_FORWARDS = 1
-    RETURN_HOME = 2
-    GO_TO_FIRST_ARTIFACT = 3
-    RANDOM_WALK = 4
-    RANDOM_GOAL = 5
-    EXPLORATION = 6
-    # Add more!
-    
-    
-class ExplorationsState(Enum):
-    ERROR = 0
-    WAITING_FOR_MAP = 1
-    IDENTIFYING_FRONTIERS = 2
-    SELECTING_FRONTIER = 3
-    MOVING_TO_FRONTIER = 4
-    HANDLE_REACHED_FRONTIER = 5
-    HANDLE_REJECTED_FRONTIER = 6
-    HANDLE_TIMEOUT = 7
-    OBJECT_IDENTIFIED_SCAN = 8
-    EXPLORED_MAP = 9
-
+How can I make frontier and image_callback run in synchronous
 
 class CaveExplorer:
     
     def __init__(self):
-        
-        # Initialize YOLO model for object detection
-        self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
-        path = os.path.abspath(__file__)
-        src_dir = os.path.dirname(path)
-        parent_dir = os.path.abspath(os.path.join(src_dir, '..', '..'))
-        model_path = os.path.join(parent_dir, 'cam_assist/src/test_train/yolov11s_trained_optimized.pt')
-        self.model_ = YOLO(model_path)
-        rospy.loginfo(f"Using YOLO model on device: {self.device_}")
-
-        # Depth and scan data handling
-        self.depth_data_ = None
-        self.base_2_depth_cam = SE3(0.5, 0, 0.9) @ SE3(0.005, 0.028, 0.013)
-        self.scan_lock = threading.Lock()
-        self.scan_data = None
-        
-        self.current_map_ = None
-        self.image_data = None
-        self.mineral_artefacts = []
-        self.mushroom_artefacts = []       
+        self.localised_ = False
+        self.artifact_found_ = False
 
         # Variables/Flags for planning
         self.planner_type_ = PlannerType.ERROR
+        self.reached_first_artifact_ = False
+        self.returned_home_ = False
         self.goal_counter_ = 0  # Unique ID for each goal sent to move_base
         self.exploration_done_ = False
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
@@ -129,18 +28,10 @@ class CaveExplorer:
             rospy.sleep(0.1)
             rospy.logwarn("Waiting for transform... Have you launched a SLAM node?")
 
-        # Subscribers
-        self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
-        self.depth_sub_ = rospy.Subscriber("/camera/depth/points", PointCloud2, self.depth_callback, queue_size=1)
-        self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
-        # self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
-        # self.laser_sub_ = rospy.Subscriber('/scan', LaserScan, self.laser_callback, queue_size=1)
-
         # Publishers
         self.cmd_vel_pub_ = rospy.Publisher('cmd_vel', Twist, queue_size=1)  # Manual control
         self.image_detections_pub_ = rospy.Publisher('detections_image', Image, queue_size=1)  # Camera detections
         self.marker_pub = rospy.Publisher('/visualization_marker', Marker, queue_size=10)  # Artifact markers
-        self.image_pub_ = rospy.Publisher("/detections_image", Image, queue_size=5)
 
         # Action client for move_base
         self.move_base_action_client_ = actionlib.SimpleActionClient('move_base', MoveBaseAction)
@@ -148,32 +39,68 @@ class CaveExplorer:
         self.move_base_action_client_.wait_for_server()
         rospy.loginfo("move_base connected")
 
-        # Timers - to publish artifact markers
-        # self.marker_timer = rospy.Timer(rospy.Duration(0.5), self.publish_artefact_markers)
+        # Subscribers
+        self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
+        self.depth_sub_ = rospy.Subscriber("/camera/depth/points", PointCloud2, self.depth_callback, queue_size=1)
+        self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
+
+        # Depth and scan data handling
+        self.depth_data_ = None
+        self.base_2_depth_cam = SE3(0.5, 0, 0.9) @ SE3(0.005, 0.028, 0.013)
+        self.scan_lock = threading.Lock()
+        self.scan_data = None
         
- 
-    # Callbacks ###################################################################################################
+        self.current_map_ = None
+
+        # Artifact storage
+        self.mineral_artefacts = []
+        self.mushroom_artefacts = []
+
+        # Set confidence threshold for object detection
+        self.confidence_threshold = 0.5
+
+        # Timer to publish artifact markers
+        # self.marker_timer = rospy.Timer(rospy.Duration(0.5), self.publish_artefact_markers)
+        self.image_pub_ = rospy.Publisher("/detections_image", Image, queue_size=5)
+        
+        self.pool = mp.Pool(processes=mp.cpu_count())
+        self._chunk_size = 1000 
+
+
+
     def depth_callback(self, depth_msg):
-        self.depth_data_ = depth_msg
+        try:
+            self.depth_data_ = depth_msg
+        except Exception as e:
+            rospy.logwarn(f"Error in depth callback: {e}")
         rospy.sleep(0.5)
 
-    def image_callback(self, image_msg):
-        self.image_data = image_msg.data
-        rospy.sleep(0.5)
+    def merge_close_frontiers_to_one(self, frontiers):
+        if len(frontiers) < 2:
+            return frontiers
 
-    def map_callback(self, map_msg):
-        if self.current_map_ is None:
-            rospy.loginfo("Map received")
-            self.current_map_ = map_msg  
-        elif self.current_map_.header.stamp != map_msg.header.stamp:
-            rospy.loginfo("Map updated")
-            self.current_map_ = map_msg
-        else:
-            rospy.loginfo("Map not updated")
-        rospy.sleep(0.5)
-    ####################################################################################################################
+        # Convert frontiers to numpy array for faster processing
+        points = np.array(frontiers)
+        
+        # Use DBSCAN clustering for efficient frontier merging
+        from sklearn.cluster import DBSCAN
+        
+        clustering = DBSCAN(
+            eps=50,  # clustering distance threshold
+            min_samples=1,  # minimum points to form a cluster
+            n_jobs=-1  # use all available cores
+        ).fit(points)
+
+        # Calculate cluster centers
+        merged_frontiers = []
+        for cluster_id in range(clustering.labels_.max() + 1):
+            cluster_points = points[clustering.labels_ == cluster_id]
+            merged_point = np.mean(cluster_points, axis=0)
+            merged_frontiers.append(merged_point.tolist())
+
+        return merged_frontiers
     
-
+        # map service
     def get_pose_2d(self):
 
         # Lookup the latest transform
@@ -238,126 +165,95 @@ class CaveExplorer:
             return point_in_world.t # .t extract translational component
 
         return None
-        
-        
-    def process_image(self):
-        if (self.planner_type_ == PlannerType.EXPLORATION):
-        # Convert the ROS image message to a CV2 image
-            cv_image = self.cv_bridge_.imgmsg_to_cv2(self.image_data, "bgr8")
-
-            results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
-
-            # Draw bounding boxes on the image
-            for result in results:
-                boxes = result.boxes
-                for box in boxes:
-                    confidence = box.conf[0].item()  # Confidence score
-
-                    # Only process boxes with confidence above the threshold
-                    confidence_threshold = 0.6
-                    classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
-
-                    if confidence >= confidence_threshold:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        class_id = int(box.cls.item())  # Get the class ID from the tensor
-                        label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
-
-                        # Calculate and print center point of the bounding box
-                        center_x = (x1 + x2) // 2
-                        center_y = (y1 + y2) // 2
-                        # rospy.loginfo(f"Center of {classes[class_id]}: ({center_x}, {center_y})")
-
-                        # Get the 3D coordinates
-                        art_xyz = self.get_posed_3d(center_x, center_y)
-
-                        # Check if art_xyz is None before accessing its elements
-                        if art_xyz is not None:
-                            # Draw rectangle and label
-                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
-
-                            # Detecting Mineral and Mushroom
-                            if class_id == 1 or class_id == 4:
-                                if class_id == 1:
-                                    artefact_list = self.mineral_artefacts
-                                else:
-                                    artefact_list = self.mushroom_artefacts
-                                
-                                # Check if it doesn't already exist
-                                already_exists = False
-                                _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
-                                for artefact in artefact_list:
-                                    if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_threshold:
-                                        continue
-                                    else:
-                                        already_exists = True
-                                        break
-
-                                if not already_exists:
-                                    # Move to the artefact
-                                    artefact_list.append(art_xyz)
-                                    self.planner_type_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN
-
-                                    # # Start the go_to_artifact in a new thread to allow image_callback to continue
-                                    # nav_thread = threading.Thread(target=self.go_to_artifact, args=(art_xyz,))
-                                    # nav_thread.start()
-                        else:
-                            # Draw rectangle and label with warning color (red)
-                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                            # rospy.logwarn("Could not retrieve 3D coordinates.")
-
-            # Convert the modified CV2 image back to a ROS Image message
-            processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
-
-            # Publish the processed image
-            self.image_pub_.publish(processed_msg)    
 
 
-    def exploration_planner(self, action_state):
-        if action_state != actionlib.GoalStatus.ACTIVE:
-            print('Exploration planner ............')
-            if self.exploration_state_ == ExplorationsState.WAITING_FOR_MAP:
-                print ( 'enteringg .... waiting for map')
-                self.handle_waiting_for_map()
+    def image_callback(self, image_msg):
+        classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
 
-            elif self.exploration_state_ == ExplorationsState.IDENTIFYING_FRONTIERS:
-                print ( 'entering ....IDENTifying frontiers')
-                self.handle_identifying_frontiers()
+        cv_image = self.cv_bridge_.imgmsg_to_cv2(image_msg, "bgr8")
 
-            elif self.exploration_state_ == ExplorationsState.SELECTING_FRONTIER:
-                print ( 'entering ....SELECTING frontiers')
-                self.handle_selecting_frontier()
+        results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
 
-            elif self.exploration_state_ == ExplorationsState.MOVING_TO_FRONTIER:
-                print ( 'entering ....MOVING TO frontiers')
-                self.handle_moving_to_frontier(action_state)
+        # Draw bounding boxes on the image
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                confidence = box.conf[0].item()  # Confidence score
 
-            elif self.exploration_state_ == ExplorationsState.HANDLE_REJECTED_FRONTIER:
-                print ( 'entering ....HANDLE REJECTED frontiers')
-                self.handle_selecting_frontier()
-                
-            elif self.exploration_state_ == ExplorationsState.HANDLE_TIMEOUT:
-                print ( 'entering ....HANDLE TIMEOUT')
-                self.handle_timeout()
+                # Only process boxes with confidence above the threshold
+                if confidence >= self.confidence_threshold:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    class_id = int(box.cls.item())  # Get the class ID from the tensor
+                    label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
 
-            elif self.exploration_state_ == ExplorationsState.EXPLORED_MAP:
-                rospy.loginfo("Exploration completed successfully.")
-                
-            elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
-                rospy.loginfo("Object identified.")
-                self.object_identified_scan()
+                    # Calculate and print center point of the bounding box
+                    center_x = (x1 + x2) // 2
+                    center_y = (y1 + y2) // 2
+                    # rospy.loginfo(f"Center of {classes[class_id]}: ({center_x}, {center_y})")
+
+                    # Get the 3D coordinates
+                    art_xyz = self.get_posed_3d(center_x, center_y)
+
+                    # Check if art_xyz is None before accessing its elements
+                    if art_xyz is not None:
+                        # Draw rectangle and label
+                        cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
+
+                        # Detecting Mineral and Mushroom
+                        if class_id == 1 or class_id == 4:
+                            if class_id == 1:
+                                artefact_list = self.mineral_artefacts
+                            else:
+                                artefact_list = self.mushroom_artefacts
                             
-                
+                            # Check if it doesn't already exist
+                            already_exists = False
+                            _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
+                            for artefact in artefact_list:
+                                if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_threshold:
+                                    continue
+                                else:
+                                    already_exists = True
+                                    break
+
+                            if not already_exists:
+                                artefact_list.append(art_xyz)
+
+                                # # Start the go_to_artifact in a new thread to allow image_callback to continue
+                                # nav_thread = threading.Thread(target=self.go_to_artifact, args=(art_xyz,))
+                                # nav_thread.start()
+                    else:
+                        # Draw rectangle and label with warning color (red)
+                        cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        # rospy.logwarn("Could not retrieve 3D coordinates.")
+
+        # Convert the modified CV2 image back to a ROS Image message
+        processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
+
+        # Publish the processed image
+        self.image_pub_.publish(processed_msg)    
+
+    def map_callback(self, map_msg):
+        if self.current_map_ is None:
+            rospy.loginfo("Map received")
+            self.current_map_ = map_msg  
+        elif self.current_map_.header.stamp != map_msg.header.stamp:
+            rospy.loginfo("Map updated")
+            self.current_map_ = map_msg
+        else:
+            rospy.loginfo("Map not updated")
+                                
+
     def object_identified_scan(self):
         # Stop the robot
         twist = Twist()
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
         self.cmd_vel_pub_.publish(twist)
-        
-        # identify object coordinates and move towards it align so that the object is in the center of the camera move towards the object and 
-        
-        # Return to the exploration state
+
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         
 
@@ -372,7 +268,9 @@ class CaveExplorer:
         print ( ' map acquired')  
         self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
         print ( 'state changed to identifying frontiers')
-    
+        
+        # rospy.sleep(2)
+
 
     def handle_identifying_frontiers(self):
         print ( 'identifying frontiers,,,,,')
@@ -383,6 +281,8 @@ class CaveExplorer:
         else:
             self.exploration_state_ = ExplorationsState.SELECTING_FRONTIER
             
+        # rospy.sleep(2)
+
 
     def handle_selecting_frontier(self):
         print ( ' frontiers found selecting frontiers')
@@ -398,12 +298,16 @@ class CaveExplorer:
             
             rospy.loginfo('Frontier selected')
             self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
+            
+        # rospy.sleep(2)
 
 
     def handle_moving_to_frontier(self, action_state):
         
-        # As robot moves to the frontier, it will check object detection - if object detected, it will stop and move towards the object
-        # Implement logic for changing planner to object detection
+        ## as the robot moves to the frontier, it will check object detection
+        ## if object detected, it will stop and move towards the object
+        
+        ## implement logic for changing planner to object detection
         
         # Ensure there is a selected frontier to attempt
         while self.selected_frontier:
@@ -453,12 +357,17 @@ class CaveExplorer:
             self.exploration_state_ = ExplorationsState.EXPLORED_MAP
             
             
+        # rospy.sleep(2)
+            
+            
     def handle_timeout(self):
         rospy.loginfo("Timeout reached.")
         self.current_map_ = None
         self.selected_frontier = None
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         
+        # rospy.sleep(0.5)
+
                                         
     def identify_frontiers(self, current_map): 
         frontiers = []
@@ -480,6 +389,7 @@ class CaveExplorer:
                         if map_array[n[0], n[1]] == -1:  # Unknown space
                             frontiers.append((i, j))
                             break
+        # rospy.sleep(0.1)
         
         return frontiers
 
@@ -491,9 +401,9 @@ class CaveExplorer:
         if row < height-1: neighbors.append((row+1, col))
         if col > 0: neighbors.append((row, col-1))
         if col < width-1: neighbors.append((row, col+1))
-        # rospy.sleep(0.0000000001)
+        rospy.sleep(0.0000000001)
         return neighbors
-  
+    
     
     def select_nearest_frontier(self, frontiers):
         return self.merge_close_frontiers_to_one(frontiers)
@@ -511,7 +421,7 @@ class CaveExplorer:
             # Find close frontiers to the selected random frontier
             close_frontiers = [random_frontier]
             for frontier in frontiers[:]:
-                if compute_distance_between_points(random_frontier, frontier) < threshold_distance:
+                if self.compute_distance_between_points(random_frontier, frontier) < threshold_distance:
                     close_frontiers.append(frontier)
                     frontiers.remove(frontier)
 
@@ -522,6 +432,10 @@ class CaveExplorer:
                 merged_frontiers.append([avg_x, avg_y])
 
         return merged_frontiers
+
+
+    def compute_distance_between_points(self, point1, point2):
+        return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
         
         
     def compute_distance(self, frontier):
@@ -535,7 +449,7 @@ class CaveExplorer:
         
         
     def is_valid_frontier(self, frontier_point):
-        # Check if the frontier point is far enough from all visited frontiers.
+        # """ Check if the frontier point is far enough from all visited frontiers. """
         min_distance = 0 # Define a minimum distance threshold
         
         for visited_point in self.visited_frontiers:
@@ -544,6 +458,7 @@ class CaveExplorer:
             if distance < min_distance:
                 return False  # The frontier is too close to a visited point
             
+        # rospy.sleep(0.5)
         return True
            
     
@@ -568,9 +483,11 @@ class CaveExplorer:
         self.goal_counter_ = self.goal_counter_ + 1
         action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
             
-        # sending the goal to move base
+            # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
         
+        # rospp.sleep(0.5)
+            
         
     def index_to_position(self, index):
         # Convert the index of the grid cell to a (x, y) position in the map
@@ -581,7 +498,8 @@ class CaveExplorer:
         
         x = (index % width) * resolution + origin_x
         y = (index // width) * resolution + origin_y
-
+        
+        # rospy.sleep(0.5)
         
         return Point(x, y, 0)  # Return as a Point object
 
@@ -604,18 +522,16 @@ class CaveExplorer:
                 print("Exploration preempted!")
                 self.exploration_done_ = False
                 action_state = actionlib.GoalStatus.PREEMPTING
-            # elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE) and (self.exploration_planner == OBJECT_IDENTIFIED_SCAN)
-            #     print (' moving to object  ')
-            #     self.exploration_done_= False
-                ## put in change state and call object scan 
 
             #######################################################
-            # Select the next planner to execute - Update this logic as you see fit!
+            # Select the next planner to execute
+            # Update this logic as you see fi   t!
             if not self.exploration_done_:
                 self.planner_type_ = PlannerType.EXPLORATION
 
             #######################################################
-            # Execute the planner by calling the relevant method - methods send a goal to "move_base" with "self.move_base_action_client_"
+            # Execute the planner by calling the relevant method
+            # The methods send a goal to "move_base" with "self.move_base_action_client_"
             # Add your own planners here!
             print("Calling planner:", self.planner_type_.name)
             if self.planner_type_ == PlannerType.EXPLORATION: 
@@ -624,15 +540,3 @@ class CaveExplorer:
             #######################################################
             # Delay so the loop doesn't run too fast
             rospy.sleep(0.5)
-
-
-if __name__ == '__main__':
-
-    # Create the ROS node
-    rospy.init_node('cave_explorer')
-
-    # Create the cave explorer
-    cave_explorer = CaveExplorer()
-
-    # Loop forever while processing callbacks
-    cave_explorer.main_loop()
