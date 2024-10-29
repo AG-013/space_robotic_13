@@ -9,31 +9,48 @@ import time
 
 # Math Modules
 from spatialmath import SE3
-# May have to install these packages:
-# pip install roboticstoolbox-python
-# pip install spatialmath-python
 import math
 import numpy as np
 
 # Machine Learning / OpenCV Modules
-import cv2 # OpenCV2
+import cv2  # OpenCV2
 import torch
 from ultralytics import YOLO
 from cv_bridge import CvBridge, CvBridgeError
 
 # ROS Modules
 import tf
-from nav_msgs.srv import GetMap
 from nav_msgs.msg import OccupancyGrid, Odometry
-from std_srvs.srv import Empty
-from geometry_msgs.msg import Twist, PoseWithCovarianceStamped, Pose2D, Pose, Point
-from sensor_msgs.msg import Image, PointCloud2, LaserScan
+from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs import point_cloud2
+from geometry_msgs.msg import Twist, Pose2D, Pose, Point
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
 import actionlib
-from visualization_msgs.msg import Marker
 import rospy
 import roslib
+
+
+class PlannerType(Enum):
+    ERROR = 0
+    MOVE_FORWARDS = 1
+    RETURN_HOME = 2
+    GO_TO_FIRST_ARTIFACT = 3
+    RANDOM_WALK = 4
+    RANDOM_GOAL = 5
+    EXPLORATION = 6
+
+
+class ExplorationsState(Enum):
+    ERROR = 0
+    WAITING_FOR_MAP = 1
+    IDENTIFYING_FRONTIERS = 2
+    SELECTING_FRONTIER = 3
+    MOVING_TO_FRONTIER = 4
+    HANDLE_REACHED_FRONTIER = 5
+    HANDLE_REJECTED_FRONTIER = 6
+    HANDLE_TIMEOUT = 7
+    OBJECT_IDENTIFIED_SCAN = 8
+    EXPLORED_MAP = 9
 
 
 def wrap_angle(angle):
@@ -63,34 +80,8 @@ def compute_distance_between_points(point1, point2):
     return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
     
     
-class PlannerType(Enum):
-    ERROR = 0
-    MOVE_FORWARDS = 1
-    RETURN_HOME = 2
-    GO_TO_FIRST_ARTIFACT = 3
-    RANDOM_WALK = 4
-    RANDOM_GOAL = 5
-    EXPLORATION = 6
-    # Add more!
-    
-    
-class ExplorationsState(Enum):
-    ERROR = 0
-    WAITING_FOR_MAP = 1
-    IDENTIFYING_FRONTIERS = 2
-    SELECTING_FRONTIER = 3
-    MOVING_TO_FRONTIER = 4
-    HANDLE_REACHED_FRONTIER = 5
-    HANDLE_REJECTED_FRONTIER = 6
-    HANDLE_TIMEOUT = 7
-    OBJECT_IDENTIFIED_SCAN = 8
-    EXPLORED_MAP = 9
-
-
 class CaveExplorer:
-    
     def __init__(self):
-        
         # Initialize YOLO model for object detection
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
         path = os.path.abspath(__file__)
@@ -104,21 +95,20 @@ class CaveExplorer:
         self.depth_data_ = None
         self.base_2_depth_cam = SE3(0.5, 0, 0.9) @ SE3(0.005, 0.028, 0.013)
         self.scan_lock = threading.Lock()
-        self.scan_data = None
-        
+        self.map_lock = threading.Lock()
+        self.image_lock = threading.Lock()
+
         self.current_map_ = None
         self.image_data = None
-        self.mineral_artefacts = []
-        self.mushroom_artefacts = []       
 
         # Variables/Flags for planning
         self.planner_type_ = PlannerType.ERROR
-        self.goal_counter_ = 0  # Unique ID for each goal sent to move_base
+        self.goal_counter_ = 0
         self.exploration_done_ = False
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         self.visited_frontiers = set()
 
-        # Initialise CvBridge for image processing
+        # Initialize CvBridge for image processing
         self.cv_bridge_ = CvBridge()
 
         # Wait for the transform from map to base_link
@@ -131,62 +121,145 @@ class CaveExplorer:
 
         # Subscribers
         self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
-        self.depth_sub_ = rospy.Subscriber("/camera/depth/points", PointCloud2, self.depth_callback, queue_size=1)
         self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
-        # self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
-        # self.laser_sub_ = rospy.Subscriber('/scan', LaserScan, self.laser_callback, queue_size=1)
 
         # Publishers
-        self.cmd_vel_pub_ = rospy.Publisher('cmd_vel', Twist, queue_size=1)  # Manual control
-        self.image_detections_pub_ = rospy.Publisher('detections_image', Image, queue_size=1)  # Camera detections
-        self.marker_pub = rospy.Publisher('/visualization_marker', Marker, queue_size=10)  # Artifact markers
-        self.image_pub = rospy.Publisher("/detections_image", Image, queue_size=5)
+        self.cmd_vel_pub_ = rospy.Publisher('cmd_vel', Twist, queue_size=1)
+        self.image_pub_ = rospy.Publisher("/detections_image", Image, queue_size=5)
 
         # Action client for move_base
         self.move_base_action_client_ = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         rospy.loginfo("Waiting for move_base action...")
         self.move_base_action_client_.wait_for_server()
-        rospy.loginfo("move_base connected")        
-        
-        # Threads ##########################################################################################################
-        self.process_timer = rospy.Timer(rospy.Duration(0.1), self.process_image)  # Calls process_image every 0.1 seconds
-        ####################################################################################################################
- 
- 
-    # Callbacks ###################################################################################################
-    def depth_callback(self, depth_msg):
-        self.depth_data_ = depth_msg
-        rospy.sleep(0.5)
+        rospy.loginfo("move_base connected")
 
+        # Other initialization code...
+        self.stop_threads = threading.Event()  # Use an event to signal threads to stop
+
+        # Start the image processing thread
+        self.image_thread = threading.Thread(target=self.process_image_continuously, daemon=True)
+        self.image_thread.start()
+
+        # Start the exploration thread with a slightly longer sleep interval
+        self.exploration_thread = threading.Thread(target=self.exploration_loop, daemon=True)
+        self.exploration_thread.start()
+
+
+    # Callback functions with locks #######################################################
     def image_callback(self, image_msg):
-        self.image_data = image_msg
-        rospy.sleep(0.5)
+        with self.image_lock:
+            self.image_data = image_msg
 
     def map_callback(self, map_msg):
-        self.current_map_ = map_msg
-        rospy.sleep(0.5)
-    ####################################################################################################################
-    
-    def get_pose_2d(self):
-        # Lookup the latest transform
-        (trans,rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+        with self.map_lock:
+            if self.current_map_ is None or self.current_map_.header.stamp != map_msg.header.stamp:
+                rospy.loginfo("Map updated")
+                self.current_map_ = map_msg
 
-        # Return a Pose2D message
-        pose = Pose2D()
-        pose.x = trans[0]
-        pose.y = trans[1]
+    # # Image processing thread ############################################################
+    def process_image_continuously(self):
+        # Continuously processes images with a minimal sleep interval for higher priority.
+        image_rate = rospy.Rate(20)  # 20 Hz for image processing (adjust as needed)
+        try:
+            while not rospy.is_shutdown() and not self.stop_threads.is_set():
+                with self.image_lock:
+                    if self.image_data:
+                        self.process_image(self.image_data)
+                image_rate.sleep()  # Use rate control for consistent processing frequency
+        except rospy.ROSInterruptException:
+            rospy.loginfo("Image processing thread shutting down.")
 
-        qw = rot[3]
-        qz = rot[2]
+    def exploration_loop(self):
+        # Exploration loop with a longer sleep interval to reduce CPU contention.
+        exploration_rate = rospy.Rate(0.5)  # 0.5 Hz for exploration (once every 2 seconds)
+        try:
+            while not rospy.is_shutdown() and not self.stop_threads.is_set():
+                self.main_loop()
+                exploration_rate.sleep()  # Run exploration at a much lower frequency
+        except rospy.ROSInterruptException:
+            rospy.loginfo("Exploration thread shutting down.")
+            
+    def stop_all_threads(self):
+        # Method to stop all threads gracefully.
+        self.stop_threads.set()
+        
+    def __del__(self):
+        # Ensure all threads are stopped upon object deletion.
+        self.stop_all_threads()
 
-        if qz >= 0.:
-            pose.theta = wrap_angle(2. * math.acos(qw))
-        else: 
-            pose.theta = wrap_angle(-2. * math.acos(qw))
+    def process_image(self, image_msg):
+        # Define the classes for YOLO detection
+        classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
 
-        return pose
+        # Convert the ROS image message to a CV2 image
+        try:
+            cv_image = self.cv_bridge_.imgmsg_to_cv2(image_msg, "bgr8")
+        except CvBridgeError as e:
+            rospy.logerr(f"CvBridge Error: {e}")
+            return
 
+        # Process the image using YOLO with reduced image size for efficiency
+        results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
 
+        detected_objects = []  # To store details of detected objects
+
+        # Draw bounding boxes on the image
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                confidence = box.conf[0].item()  # Confidence score
+
+                # Only process boxes with confidence above the threshold
+                confidence_threshold = 0.65
+                if confidence >= confidence_threshold:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    class_id = int(box.cls.item())  # Get the class ID from the tensor
+                    label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
+
+                    # Calculate center point of the bounding box
+                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+
+                    # Get the 3D coordinates based on the center point of the bounding box
+                    art_xyz = self.get_posed_3d(center_x, center_y)
+
+                    if art_xyz is not None:
+                        # Store detected object details for efficient bounding box drawing
+                        detected_objects.append((x1, y1, x2, y2, label, center_x, center_y, art_xyz, class_id))
+
+                        # Check if detected object is a "Mineral" or "Mushroom"
+                        if class_id in (1, 4):
+                            artefact_list = self.mineral_artefacts if class_id == 1 else self.mushroom_artefacts
+
+                            # Check if the artifact already exists within a threshold distance
+                            if not self.is_existing_artefact(artefact_list, art_xyz, threshold=7):
+                                artefact_list.append(art_xyz)
+                                # You can create a thread here to go to the artifact if needed
+                                # threading.Thread(target=self.go_to_artifact, args=(art_xyz,)).start()
+                    else:
+                        # Add objects without 3D coordinates with a warning color
+                        detected_objects.append((x1, y1, x2, y2, label, center_x, center_y, None, class_id))
+
+        # Draw all bounding boxes and labels on the image
+        for x1, y1, x2, y2, label, center_x, center_y, art_xyz, class_id in detected_objects:
+            color = (0, 255, 0) if art_xyz is not None else (0, 0, 255)
+            cv2.rectangle(cv_image, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
+
+        # Convert the modified CV2 image back to a ROS Image message
+        processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
+
+        # Publish the processed image
+        self.image_pub_.publish(processed_msg)
+
+    def is_existing_artefact(self, artefact_list, new_artefact, threshold=7):
+        """
+        Check if an artefact already exists within a minimum distance threshold.
+        """
+        for artefact in artefact_list:
+            if math.hypot(artefact[0] - new_artefact[0], artefact[1] - new_artefact[1]) <= threshold:
+                return True
+        return False
     def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
         # Check if data is available
         if not self.depth_data_:
@@ -199,18 +272,19 @@ class CaveExplorer:
         qz = rot[2]
         qw = rot[3]
         
-        theta = wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
+        theta = self.wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
         
         # Create robot pose transformation
         robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
 
         
         # Extract point from depth data
-        point = list(point_cloud2.read_points(  self.depth_data_, 
-                                                field_names=("x", "y", "z"), 
-                                                skip_nans=True, 
-                                                uvs=[(pixel_x, pixel_y)]
-                                            ))
+        point = list(point_cloud2.read_points(
+            self.depth_data_, 
+            field_names=("x", "y", "z"), 
+            skip_nans=True, 
+            uvs=[(pixel_x, pixel_y)]
+        ))
         
         if point:
             # Convert point from camera frame to robot base frame
@@ -229,83 +303,13 @@ class CaveExplorer:
             return point_in_world.t # .t extract translational component
 
         return None
-        
-        
-    def process_image(self, event):
-        if (self.planner_type_ == PlannerType.EXPLORATION):
-   
-        # Convert the ROS image message to a CV2 image
-            cv_image = self.cv_bridge_.imgmsg_to_cv2(self.image_data, "bgr8")
 
-            results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
 
-            # Draw bounding boxes on the image
-            for result in results:
-                boxes = result.boxes
-                for box in boxes:
-                    confidence = box.conf[0].item()  # Confidence score
-
-                    # Only process boxes with confidence above the threshold
-                    confidence_threshold = 0.6
-                    classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
-
-                    if confidence >= confidence_threshold:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        class_id = int(box.cls.item())  # Get the class ID from the tensor
-                        label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
-
-                        # Calculate and print center point of the bounding box
-                        center_x = (x1 + x2) // 2
-                        center_y = (y1 + y2) // 2
-                        # rospy.loginfo(f"Center of {classes[class_id]}: ({center_x}, {center_y})")
-
-                        # Get the 3D coordinates
-                        art_xyz = self.get_posed_3d(center_x, center_y)
-
-                        # Check if art_xyz is None before accessing its elements
-                        if art_xyz is not None:
-                            # Draw rectangle and label
-                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
-
-                            # Detecting Mineral and Mushroom
-                            if class_id == 1 or class_id == 4:
-                                if class_id == 1:
-                                    artefact_list = self.mineral_artefacts
-                                else:
-                                    artefact_list = self.mushroom_artefacts
-                                
-                                # Check if it doesn't already exist
-                                already_exists = False
-                                _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
-                                for artefact in artefact_list:
-                                    if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_threshold:
-                                        continue
-                                    else:
-                                        already_exists = True
-                                        break
-
-                                if not already_exists:
-                                    # Move to the artefact
-                                    artefact_list.append(art_xyz)
-                                    self.planner_type_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN
-
-                                    # # Start the go_to_artifact in a new thread to allow image_callback to continue
-                                    # nav_thread = threading.Thread(target=self.go_to_artifact, args=(art_xyz,))
-                                    # nav_thread.start()
-                        else:
-                            # Draw rectangle and label with warning color (red)
-                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                            # rospy.logwarn("Could not retrieve 3D coordinates.")
-
-            # Convert the modified CV2 image back to a ROS Image message
-            processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
-
-            # Publish the processed image
-            self.image_pub.publish(processed_msg)   
-
+    # Exploration planning thread #########################################################
+    def exploration_loop(self):
+        while not rospy.is_shutdown():
+            self.main_loop()
+            rospy.sleep(0.5)
 
     def exploration_planner(self, action_state):
         if action_state != actionlib.GoalStatus.ACTIVE:
@@ -346,24 +350,28 @@ class CaveExplorer:
         # Stop the robot
         twist = Twist()
         self.cmd_vel_pub_.publish(twist)
+        
+        # identify object coordinates and move towards it align so that the object is in the center of the camera move towards the object and 
+        
+        # Return to the exploration state
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         
 
     def handle_waiting_for_map(self):
-        print ('waiting for map.....')
+        print( 'waiting for map.....')
         while self.current_map_ is None:
             rospy.logwarn("Map not available yet, waiting for map...")
             rospy.sleep(1.0)  # Wait for the map to be received
             continue  # Keep waiting until the map is received
         # load the current map
         current_map = self.current_map_
-        print ('map acquired')  
+        print ( ' map acquired')  
         self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
         print ('state changed to identifying frontiers')
     
 
     def handle_identifying_frontiers(self):
-        print ( 'identifying frontiers,,,,,')
+        print ('identifying frontiers,,,,,')
         frontiers = self.identify_frontiers(self.current_map_)
         if not frontiers:
             rospy.loginfo('No frontiers found!')
@@ -479,6 +487,7 @@ class CaveExplorer:
         if row < height-1: neighbors.append((row+1, col))
         if col > 0: neighbors.append((row, col-1))
         if col < width-1: neighbors.append((row, col+1))
+        # rospy.sleep(0.0000000001)
         return neighbors
   
     
@@ -569,57 +578,39 @@ class CaveExplorer:
         x = (index % width) * resolution + origin_x
         y = (index // width) * resolution + origin_y
 
-        
         return Point(x, y, 0)  # Return as a Point object
-
-
+    
+    
     def main_loop(self):
-
-        while not rospy.is_shutdown():
-
-            #######################################################
-            # Get the current status
-            # See the possible statuses here: https://docs.ros.org/en/noetic/api/actionlib_msgs/html/msg/GoalStatus.html
+        # This method implements the main exploration state machine
+        with self.map_lock:
             action_state = self.move_base_action_client_.get_state()
             rospy.loginfo('action state: ' + self.move_base_action_client_.get_goal_status_text())
             rospy.loginfo('action_state number:' + str(action_state))
-            
+
             if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-                print("Successfully explored!")
+                rospy.loginfo("Successfully explored!")
                 self.exploration_done_ = True
             elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE):
-                print("Exploration preempted!")
+                rospy.loginfo("Exploration preempted!")
                 self.exploration_done_ = False
                 action_state = actionlib.GoalStatus.PREEMPTING
-            # elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE) and (self.exploration_planner == OBJECT_IDENTIFIED_SCAN)
-            #     print (' moving to object  ')
-            #     self.exploration_done_= False
-                ## put in change state and call object scan 
 
-            #######################################################
-            # Select the next planner to execute - Update this logic as you see fit!
+            # Select the next planner to execute
             if not self.exploration_done_:
                 self.planner_type_ = PlannerType.EXPLORATION
 
-            #######################################################
-            # Execute the planner by calling the relevant method - methods send a goal to "move_base" with "self.move_base_action_client_"
-            # Add your own planners here!
-            print("Calling planner:", self.planner_type_.name)
-            if self.planner_type_ == PlannerType.EXPLORATION: 
+            # Execute the planner by calling the relevant method
+            rospy.loginfo("Calling planner: " + self.planner_type_.name)
+            if self.planner_type_ == PlannerType.EXPLORATION:
                 self.exploration_planner(action_state)
-
-            #######################################################
-            # Delay so the loop doesn't run too fast
-            rospy.sleep(0.5)
 
 
 if __name__ == '__main__':
-
-    # Create the ROS node
     rospy.init_node('cave_explorer')
 
-    # Create the cave explorer
+    # Create the cave explorer instance
     cave_explorer = CaveExplorer()
 
-    # Loop forever while processing callbacks
-    cave_explorer.main_loop()
+    # Keep the node running
+    rospy.spin()
