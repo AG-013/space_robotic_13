@@ -105,25 +105,13 @@ class CaveExplorer:
         self.move_base_action_client_.wait_for_server()
         rospy.loginfo("move_base connected")
 
-        # # Start the image processing thread
-        # self.image_thread = threading.Thread(target=self.process_image_continuously)
-        # self.image_thread.start()
-
-        # # Start the exploration thread
-        # self.exploration_thread = threading.Thread(target=self.exploration_loop)
-        # self.exploration_thread.start()
-        
-        # Other initialization code...
-        self.stop_threads = threading.Event()  # Use an event to signal threads to stop
-
         # Start the image processing thread
-        self.image_thread = threading.Thread(target=self.process_image_continuously, daemon=True)
+        self.image_thread = threading.Thread(target=self.process_image_continuously)
         self.image_thread.start()
 
-        # Start the exploration thread with a slightly longer sleep interval
-        self.exploration_thread = threading.Thread(target=self.exploration_loop, daemon=True)
+        # Start the exploration thread
+        self.exploration_thread = threading.Thread(target=self.exploration_loop)
         self.exploration_thread.start()
-
 
     # Callback functions with locks #######################################################
     def image_callback(self, image_msg):
@@ -136,190 +124,24 @@ class CaveExplorer:
                 rospy.loginfo("Map updated")
                 self.current_map_ = map_msg
 
-    # # Image processing thread ############################################################
-    # def process_image_continuously(self):
-    #     while not rospy.is_shutdown():
-    #         with self.image_lock:
-    #             if self.image_data:
-    #                 self.process_image(self.image_data)
-    #         # rospy.sleep(0.1)
-    # def process_image_continuously(self):
-    #     """
-    #     Continuously processes images with a minimal sleep interval for higher priority.
-    #     """
-    #     try:
-    #         while not rospy.is_shutdown() and not self.stop_threads.is_set():
-    #             with self.image_lock:
-    #                 if self.image_data:
-    #                     self.process_image(self.image_data)
-    #             # rospy.sleep(0.05)  # A minimal sleep to prioritize image processing
-    #     except rospy.ROSInterruptException:
-    #         rospy.loginfo("Image processing thread shutting down.")
+    # Image processing thread ############################################################
     def process_image_continuously(self):
-        """
-        Continuously processes images with a minimal sleep interval for higher priority.
-        """
-        image_rate = rospy.Rate(20)  # 20 Hz for image processing (adjust as needed)
-        try:
-            while not rospy.is_shutdown() and not self.stop_threads.is_set():
-                with self.image_lock:
-                    if self.image_data:
-                        self.process_image(self.image_data)
-                image_rate.sleep()  # Use rate control for consistent processing frequency
-        except rospy.ROSInterruptException:
-            rospy.loginfo("Image processing thread shutting down.")
+        while not rospy.is_shutdown():
+            with self.image_lock:
+                if self.image_data:
+                    self.process_image()
+            rospy.sleep(0.1)
 
-    # def exploration_loop(self):
-    #     """
-    #     Exploration loop with a longer sleep interval to reduce CPU contention.
-    #     """
-    #     try:
-    #         while not rospy.is_shutdown() and not self.stop_threads.is_set():
-    #             self.main_loop()
-    #             rospy.sleep(2)  # Increased sleep interval to give more CPU to image processing
-    #     except rospy.ROSInterruptException:
-    #         rospy.loginfo("Exploration thread shutting down.")
-    def exploration_loop(self):
-        """
-        Exploration loop with a longer sleep interval to reduce CPU contention.
-        """
-        exploration_rate = rospy.Rate(0.5)  # 0.5 Hz for exploration (once every 2 seconds)
+    def process_image(self):
+        # Example image processing logic
         try:
-            while not rospy.is_shutdown() and not self.stop_threads.is_set():
-                self.main_loop()
-                exploration_rate.sleep()  # Run exploration at a much lower frequency
-        except rospy.ROSInterruptException:
-            rospy.loginfo("Exploration thread shutting down.")
-            
-    def stop_all_threads(self):
-        """
-        Method to stop all threads gracefully.
-        """
-        self.stop_threads.set()
-        
-    def __del__(self):
-        """
-        Ensure all threads are stopped upon object deletion.
-        """
-        self.stop_all_threads()
-
-    def process_image(self, image_msg):
-        # Define the classes for YOLO detection
-        classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
-
-        # Convert the ROS image message to a CV2 image
-        try:
-            cv_image = self.cv_bridge_.imgmsg_to_cv2(image_msg, "bgr8")
+            cv_image = self.cv_bridge_.imgmsg_to_cv2(self.image_data, "bgr8")
+            # Perform image detection or processing here (e.g., YOLO, feature detection, etc.)
+            # Publish processed image
+            processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
+            self.image_pub_.publish(processed_msg)
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
-            return
-
-        # Process the image using YOLO with reduced image size for efficiency
-        results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
-
-        detected_objects = []  # To store details of detected objects
-
-        # Draw bounding boxes on the image
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                confidence = box.conf[0].item()  # Confidence score
-
-                # Only process boxes with confidence above the threshold
-                confidence_threshold = 0.65
-                if confidence >= confidence_threshold:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    class_id = int(box.cls.item())  # Get the class ID from the tensor
-                    label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
-
-                    # Calculate center point of the bounding box
-                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-
-                    # Get the 3D coordinates based on the center point of the bounding box
-                    art_xyz = self.get_posed_3d(center_x, center_y)
-
-                    if art_xyz is not None:
-                        # Store detected object details for efficient bounding box drawing
-                        detected_objects.append((x1, y1, x2, y2, label, center_x, center_y, art_xyz, class_id))
-
-                        # Check if detected object is a "Mineral" or "Mushroom"
-                        if class_id in (1, 4):
-                            artefact_list = self.mineral_artefacts if class_id == 1 else self.mushroom_artefacts
-
-                            # Check if the artifact already exists within a threshold distance
-                            if not self.is_existing_artefact(artefact_list, art_xyz, threshold=7):
-                                artefact_list.append(art_xyz)
-                                # You can create a thread here to go to the artifact if needed
-                                # threading.Thread(target=self.go_to_artifact, args=(art_xyz,)).start()
-                    else:
-                        # Add objects without 3D coordinates with a warning color
-                        detected_objects.append((x1, y1, x2, y2, label, center_x, center_y, None, class_id))
-
-        # Draw all bounding boxes and labels on the image
-        for x1, y1, x2, y2, label, center_x, center_y, art_xyz, class_id in detected_objects:
-            color = (0, 255, 0) if art_xyz is not None else (0, 0, 255)
-            cv2.rectangle(cv_image, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
-
-        # Convert the modified CV2 image back to a ROS Image message
-        processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
-
-        # Publish the processed image
-        self.image_pub_.publish(processed_msg)
-
-    def is_existing_artefact(self, artefact_list, new_artefact, threshold=7):
-        """
-        Check if an artefact already exists within a minimum distance threshold.
-        """
-        for artefact in artefact_list:
-            if math.hypot(artefact[0] - new_artefact[0], artefact[1] - new_artefact[1]) <= threshold:
-                return True
-        return False
-    def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
-        # Check if data is available
-        if not self.depth_data_:
-            rospy.logwarn("Depth message not received yet!")
-            return None
-        
-        # Get current robot pose transformation
-        (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
-        x, y, z = trans
-        qz = rot[2]
-        qw = rot[3]
-        
-        theta = wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
-        
-        # Create robot pose transformation
-        robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
-
-        
-        # Extract point from depth data
-        point = list(point_cloud2.read_points(
-            self.depth_data_, 
-            field_names=("x", "y", "z"), 
-            skip_nans=True, 
-            uvs=[(pixel_x, pixel_y)]
-        ))
-        
-        if point:
-            # Convert point from camera frame to robot base frame
-            old_x, old_y, old_z = point[0]
-            
-            # Transform from camera optical frame to camera frame
-            x = old_z
-            y = -old_x
-            z = -old_y
-            
-            # Create point transformation
-            point_transform = SE3.Trans(x, y, z)
-            point_in_world = robot_pos @ self.base_2_depth_cam @ point_transform
-            
-            # Extract the translation components (t) from the final transformation
-            return point_in_world.t # .t extract translational component
-
-        return None
-
 
     # Exploration planning thread #########################################################
     def exploration_loop(self):
@@ -623,28 +445,44 @@ class CaveExplorer:
         return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
     
     def main_loop(self):
-        # This method implements the main exploration state machine
-        with self.map_lock:
+
+        while not rospy.is_shutdown():
+
+            #######################################################
+            # Get the current status
+            # See the possible statuses here: https://docs.ros.org/en/noetic/api/actionlib_msgs/html/msg/GoalStatus.html
             action_state = self.move_base_action_client_.get_state()
             rospy.loginfo('action state: ' + self.move_base_action_client_.get_goal_status_text())
             rospy.loginfo('action_state number:' + str(action_state))
-
+            
             if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-                rospy.loginfo("Successfully explored!")
+                print("Successfully explored!")
                 self.exploration_done_ = True
             elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE):
-                rospy.loginfo("Exploration preempted!")
+                print("Exploration preempted!")
                 self.exploration_done_ = False
                 action_state = actionlib.GoalStatus.PREEMPTING
+            # elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE) and (self.exploration_planner == OBJECT_IDENTIFIED_SCAN)
+            #     print (' moving to object  ')
+            #     self.exploration_done_= False
+                ## put in change state and call object scan 
 
-            # Select the next planner to execute
+            #######################################################
+            # Select the next planner to execute - Update this logic as you see fit!
             if not self.exploration_done_:
                 self.planner_type_ = PlannerType.EXPLORATION
 
-            # Execute the planner by calling the relevant method
-            rospy.loginfo("Calling planner: " + self.planner_type_.name)
-            if self.planner_type_ == PlannerType.EXPLORATION:
+            #######################################################
+            # Execute the planner by calling the relevant method - methods send a goal to "move_base" with "self.move_base_action_client_"
+            # Add your own planners here!
+            print("Calling planner:", self.planner_type_.name)
+            if self.planner_type_ == PlannerType.EXPLORATION: 
                 self.exploration_planner(action_state)
+
+            #######################################################
+            # Delay so the loop doesn't run too fast
+            rospy.sleep(0.5)
+
 
 
 if __name__ == '__main__':
