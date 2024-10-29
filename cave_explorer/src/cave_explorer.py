@@ -1,30 +1,5 @@
 #!/usr/bin/env python3
 
-# import rospy
-# import roslib
-# import math
-# import cv2 # OpenCV2
-# from cv_bridge import CvBridge, CvBridgeError
-# import numpy as np
-# from nav_msgs.srv import GetMap
-# from nav_msgs.msg import OccupancyGrid
-# from nav_msgs.msg import Odometry
-# import tf
-# from std_srvs.srv import Empty
-# from sensor_msgs.msg import LaserScan
-# from geometry_msgs.msg import Twist
-# from geometry_msgs.msg import PoseWithCovarianceStamped
-# from geometry_msgs.msg import Pose2D
-# from geometry_msgs.msg import Pose
-# from geometry_msgs.msg import Point
-# from sensor_msgs.msg import Image
-# from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
-# import actionlib
-# import random
-# import copy
-# from threading import Lock
-# from enum import Enum
-
 import os
 import random
 import copy
@@ -108,9 +83,8 @@ class ExplorationsState(Enum):
     EXPLORED_MAP = 9
 
 class CaveExplorer:
+    
     def __init__(self):
-        
-        
         # Initialize YOLO model for object detection
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
         self.path = os.path.abspath(__file__)
@@ -188,6 +162,7 @@ class CaveExplorer:
         except Exception as e:
             rospy.logwarn(f"Error in depth callback: {e}")
 
+
         # map service
     def get_pose_2d(self):
 
@@ -207,9 +182,8 @@ class CaveExplorer:
         else: 
             pose.theta = wrap_angle(-2. * math.acos(qw))
 
-        # print("pose: ", pose)
-
         return pose
+
 
     def create_marker(self, art_xyz, marker_id, r, g, b):
         marker = Marker()
@@ -236,6 +210,7 @@ class CaveExplorer:
         marker.pose.orientation.w = 1.0
         
         return marker
+
 
     def publish_artefact_markers(self, event):
         marker_id = 0  # Start counter for unique IDs
@@ -299,9 +274,6 @@ class CaveExplorer:
 
 
     def image_callback(self, image_msg):
-        # object identified
-        # self.exploration_planner(ExplorationsState.OBJECT_IDENTIFIED_SCAN)
-        rospy.logerr('IMAGE CALLBACK IS RUNNING')
         classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
 
         try:
@@ -312,9 +284,10 @@ class CaveExplorer:
             return
 
         # Process the image using YOLO
-        print('Device:', self.device_)
+        print('------------------------------------------------------------')
+        print('USING CUDA:', self.device_)
+        print('------------------------------------------------------------')
         results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
-        
 
         # Draw bounding boxes on the image
         for result in results:
@@ -335,41 +308,39 @@ class CaveExplorer:
 
                     # Get the 3D coordinates
                     art_xyz = self.get_posed_3d(center_x, center_y)
-                    
+
                     # Check if art_xyz is None before accessing its elements
                     if art_xyz is not None:
-                        # rospy.loginfo(f"X: {art_xyz[0]},  Y: {art_xyz[1]},  Z: {art_xyz[2]}")
-                        print(art_xyz)
-                        
                         # Draw rectangle and label
                         cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
 
-                        # classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
-                        # Detecting Mineral and Mushroom - choosing mushroom because mineral and mushroom aren't together, so less points of error                         
+                        # Detecting Mineral and Mushroom
                         if class_id == 1 or class_id == 4:
                             if class_id == 1:
                                 artefact_list = self.mineral_artefacts
                             else:
                                 artefact_list = self.mushroom_artefacts
-                            # Check if it doesn't already exist first
+                            
+                            # Check if it doesn't already exist
                             already_exists = False
+                            _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
                             for artefact in artefact_list:
-                                
-                                # When having multiple markers make sure that they are at least a min distance away from each other
-                                _art_art_dist_treshold = 7
-        
-                                if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_treshold:
+                                if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_threshold:
                                     continue
                                 else:
                                     already_exists = True
                                     break
+
                             if not already_exists:
                                 artefact_list.append(art_xyz)
-                                # self.go_to_artifact(art_xyz)
+
+                                # # Start the go_to_artifact in a new thread to allow image_callback to continue
+                                # nav_thread = threading.Thread(target=self.go_to_artifact, args=(art_xyz,))
+                                # nav_thread.start()
                     else:
-                        # Draw rectangle and label
+                        # Draw rectangle and label with warning color (red)
                         cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
                         cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                         rospy.logwarn("Could not retrieve 3D coordinates.")
@@ -377,119 +348,116 @@ class CaveExplorer:
         # Convert the modified CV2 image back to a ROS Image message
         try:
             processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
-            rospy.logerr('Published Image!!!!!!!!!!')
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
             return
 
         # Publish the processed image
         self.image_pub_.publish(processed_msg)
-        # _--------------------------------------------------------------
 
-
+        
     def go_to_artifact(self, artefact_trans: tuple):
-            # Navigate robot to target artifact position
+        # Navigate robot to target artifact position
 
-            # Constants
-            ANGLE_THRESHOLD = 0.1  # Radians
-            DISTANCE_THRESHOLD = 1.75  # m
-            LINEAR_SPEED = 0.5  # m/s
-            ANGULAR_SPEED = 0.5  # rad/s
-            REVERSE_DISTANCE = 1.0  # m to reverse after reaching the artifact
+        # Constants
+        ANGLE_THRESHOLD = 0.1  # Radians
+        DISTANCE_THRESHOLD = 1.75  # m
+        LINEAR_SPEED = 0.5  # m/s
+        ANGULAR_SPEED = 0.5  # rad/s
+        REVERSE_DISTANCE = 1.0  # m to reverse after reaching the artifact
 
-            # 1. Initial Rotation to face target
+        # 1. Initial Rotation to face target
+        pose_2d = self.get_pose_2d()
+        target_theta = math.atan2(artefact_trans[1] - pose_2d.y, artefact_trans[0] - pose_2d.x)
+        cur_theta = wrap_angle(pose_2d.theta)
+
+        # Store the original angle before rotation to face the artifact
+        original_theta = cur_theta
+
+        while abs(wrap_angle(target_theta - cur_theta)) > ANGLE_THRESHOLD:
+            rospy.logerr('Rotating Robot to face artifact')
             pose_2d = self.get_pose_2d()
-            target_theta = math.atan2(artefact_trans[1] - pose_2d.y, artefact_trans[0] - pose_2d.x)
             cur_theta = wrap_angle(pose_2d.theta)
+            
+            twist_msg = Twist()
+            angle_diff = wrap_angle(target_theta - cur_theta)
+            twist_msg.angular.z = ANGULAR_SPEED * angle_diff
+            
+            self.cmd_vel_pub_.publish(twist_msg)
+            
+        # Stop rotation
+        self.cmd_vel_pub_.publish(Twist())
+        rospy.sleep(0.5)  # Brief pause after rotation
 
-            # Store the original angle before rotation to face the artifact
-            original_theta = cur_theta
+        # 2. Forward Movement
+        pose_2d = self.get_pose_2d()
+        distance = self.get_distance_to_target(artefact_trans, pose_2d)
 
-            while abs(wrap_angle(target_theta - cur_theta)) > ANGLE_THRESHOLD:
-                rospy.logerr('Rotating Robot to face artifact')
-                pose_2d = self.get_pose_2d()
-                cur_theta = wrap_angle(pose_2d.theta)
-                
+        while distance > DISTANCE_THRESHOLD and not rospy.is_shutdown():
+            while self.about_to_collide():
+                # Avoid obstacles while moving toward the artifact
                 twist_msg = Twist()
-                angle_diff = wrap_angle(target_theta - cur_theta)
-                twist_msg.angular.z = ANGULAR_SPEED * angle_diff
-                
+                if self.move_left():
+                    rospy.logerr(f'ABOUT TO COLLIDE SO MOVING LEFT: {distance:.2f}m')
+                    twist_msg.linear.y = 0.5
+                else:
+                    rospy.logerr(f'ABOUT TO COLLIDE SO MOVING RIGHT: {distance:.2f}m')
+                    twist_msg.linear.y = -0.5
                 self.cmd_vel_pub_.publish(twist_msg)
-                rospy.sleep(0.1)
-
-            # Stop rotation
-            self.cmd_vel_pub_.publish(Twist())
-            rospy.sleep(0.5)  # Brief pause after rotation
-
-            # 2. Forward Movement
+            
+            rospy.logerr(f'Moving forward, distance: {distance:.2f}m')
             pose_2d = self.get_pose_2d()
+            
+            # Recalculate target angle and current angle difference
+            target_theta = math.atan2(artefact_trans[1] - pose_2d.y, artefact_trans[0] - pose_2d.x)
+            angle_diff = wrap_angle(target_theta - wrap_angle(pose_2d.theta))
+            
+            twist_msg = Twist()
+            twist_msg.linear.x = LINEAR_SPEED
+            twist_msg.angular.z = 0.5 * ANGULAR_SPEED * angle_diff
+            
+            self.cmd_vel_pub_.publish(twist_msg)
+            
+            # Update distance
             distance = self.get_distance_to_target(artefact_trans, pose_2d)
+            rospy.sleep(0.1)
 
-            while distance > DISTANCE_THRESHOLD and not rospy.is_shutdown():
-                while self.about_to_collide():
-                    # Avoid obstacles while moving toward the artifact
-                    twist_msg = Twist()
-                    if self.move_left():
-                        rospy.logerr(f'ABOUT TO COLLIDE SO MOVING LEFT: {distance:.2f}m')
-                        twist_msg.linear.y = 0.5
-                    else:
-                        rospy.logerr(f'ABOUT TO COLLIDE SO MOVING RIGHT: {distance:.2f}m')
-                        twist_msg.linear.y = -0.5
-                    self.cmd_vel_pub_.publish(twist_msg)
-                
-                rospy.logerr(f'Moving forward, distance: {distance:.2f}m')
-                pose_2d = self.get_pose_2d()
-                
-                # Recalculate target angle and current angle difference
-                target_theta = math.atan2(artefact_trans[1] - pose_2d.y, artefact_trans[0] - pose_2d.x)
-                angle_diff = wrap_angle(target_theta - wrap_angle(pose_2d.theta))
-                
-                twist_msg = Twist()
-                twist_msg.linear.x = LINEAR_SPEED
-                twist_msg.angular.z = 0.5 * ANGULAR_SPEED * angle_diff
-                
-                self.cmd_vel_pub_.publish(twist_msg)
-                
-                # Update distance
-                distance = self.get_distance_to_target(artefact_trans, pose_2d)
-                rospy.sleep(0.1)
+        # Stop the robot after reaching the artifact
+        self.cmd_vel_pub_.publish(Twist())
+        rospy.sleep(2)
+        # rospy.loginfo('Arrived at the artifact')
+        rospy.loginfo("\033[93mArrived at the artifact\033[0m")
 
-            # Stop the robot after reaching the artifact
-            self.cmd_vel_pub_.publish(Twist())
-            rospy.sleep(2)
-            # rospy.loginfo('Arrived at the artifact')
-            rospy.loginfo("\033[93mArrived at the artifact\033[0m")
+        # 3. Reverse movement
+        rospy.loginfo('Reversing away from the artifact')
+        reverse_distance = 0
+        while reverse_distance < REVERSE_DISTANCE and not rospy.is_shutdown():
+            twist_msg = Twist()
+            twist_msg.linear.x = -LINEAR_SPEED  # Move backward
+            self.cmd_vel_pub_.publish(twist_msg)
+            
+            rospy.sleep(0.1)
+            reverse_distance += LINEAR_SPEED * 0.1  # Approximate how much the robot has moved
 
-            # 3. Reverse movement
-            rospy.loginfo('Reversing away from the artifact')
-            reverse_distance = 0
-            while reverse_distance < REVERSE_DISTANCE and not rospy.is_shutdown():
-                twist_msg = Twist()
-                twist_msg.linear.x = -LINEAR_SPEED  # Move backward
-                self.cmd_vel_pub_.publish(twist_msg)
-                
-                rospy.sleep(0.1)
-                reverse_distance += LINEAR_SPEED * 0.1  # Approximate how much the robot has moved
+        # Stop the robot after reversing
+        self.cmd_vel_pub_.publish(Twist())
+        rospy.loginfo('Reversed away from the artifact')
 
-            # Stop the robot after reversing
-            self.cmd_vel_pub_.publish(Twist())
-            rospy.loginfo('Reversed away from the artifact')
-
-            # 4. Rotate back to original orientation
-            rospy.loginfo('Rotating back to the original orientation')
+        # 4. Rotate back to original orientation
+        rospy.loginfo('Rotating back to the original orientation')
+        cur_theta = wrap_angle(self.get_pose_2d().theta)
+        while abs(wrap_angle(original_theta - cur_theta)) > ANGLE_THRESHOLD and not rospy.is_shutdown():
             cur_theta = wrap_angle(self.get_pose_2d().theta)
-            while abs(wrap_angle(original_theta - cur_theta)) > ANGLE_THRESHOLD and not rospy.is_shutdown():
-                cur_theta = wrap_angle(self.get_pose_2d().theta)
-                
-                twist_msg = Twist()
-                angle_diff = -wrap_angle(original_theta - cur_theta)
-                twist_msg.angular.z = ANGULAR_SPEED * angle_diff
-                self.cmd_vel_pub_.publish(twist_msg)
-                rospy.sleep(0.1)
+            
+            twist_msg = Twist()
+            angle_diff = -wrap_angle(original_theta - cur_theta)
+            twist_msg.angular.z = ANGULAR_SPEED * angle_diff
+            self.cmd_vel_pub_.publish(twist_msg)
+            rospy.sleep(0.1)
 
-            # Stop rotation
-            self.cmd_vel_pub_.publish(Twist())
-            rospy.loginfo('Returned to original orientation')
+        # Stop rotation
+        self.cmd_vel_pub_.publish(Twist())
+        rospy.loginfo('Returned to original orientation')
 
  
     def about_to_collide(self):
@@ -563,6 +531,8 @@ class CaveExplorer:
             self.current_map_ = map_msg
         else:
             rospy.loginfo("Map not updated")
+            
+        # rospy.sleep(0.05)
                     
         
     def odom_callback(self,odom_sub_):
@@ -582,12 +552,16 @@ class CaveExplorer:
         linear = self.odom_.twist.twist.linear
         angular = self.odom_.twist.twist.angular
         
+        # rospy.sleep(0.5)
+        
         
     def laser_callback(self,laser_sub_):
         self.laser_scan_ = laser_sub_
         # Extract laser scan data
         rospy.loginfo ("Laser received")
         self.scan_ranges = self.laser_scan_.ranges
+        
+        # rospy.sleep(0.5)
         
     
     def exploration_planner(self, action_state):
@@ -622,6 +596,8 @@ class CaveExplorer:
             elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
                 rospy.loginfo("Object identified.")
                 self.object_identified_scan()
+            
+        rospy.sleep(0.5)
                 
                 
     def object_identified_scan(self):
@@ -635,10 +611,11 @@ class CaveExplorer:
         # align so that the object is in the center of the camera
         # move towards the object and 
         
-
-
         # Return to the exploration state
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        
+        rospy.sleep(0.5)
+
 
     def handle_waiting_for_map(self):
         print ( 'waiting for map.....')
@@ -651,6 +628,9 @@ class CaveExplorer:
         print ( ' map acquired')  
         self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
         print ( 'state changed to identifying frontiers')
+        
+        rospy.sleep(0.5)
+
 
     def handle_identifying_frontiers(self):
         print ( 'identifying frontiers,,,,,')
@@ -660,6 +640,9 @@ class CaveExplorer:
             self.exploration_state_ = ExplorationsState.EXPLORED_MAP
         else:
             self.exploration_state_ = ExplorationsState.SELECTING_FRONTIER
+            
+        rospy.sleep(0.5)
+
 
     def handle_selecting_frontier(self):
         print ( ' frontiers found selecting frontiers')
@@ -675,6 +658,9 @@ class CaveExplorer:
             
             rospy.loginfo('Frontier selected')
             self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
+            
+        rospy.sleep(0.5)
+
 
     def handle_moving_to_frontier(self, action_state):
         
@@ -730,11 +716,17 @@ class CaveExplorer:
             rospy.loginfo("No more frontiers to explore.")
             self.exploration_state_ = ExplorationsState.EXPLORED_MAP
             
+            
+        rospy.sleep(0.5)
+            
+            
     def handle_timeout(self):
         rospy.loginfo("Timeout reached.")
         self.current_map_ = None
         self.selected_frontier = None
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        
+        rospy.sleep(0.5)
 
                                         
     def identify_frontiers(self, current_map): 
@@ -756,6 +748,7 @@ class CaveExplorer:
                             if map_array[n[0], n[1]] == -1:  # Unknown space
                                 frontiers.append((i, j))
                                 break
+        rospy.sleep(0.5)
         return frontiers
 
 
@@ -766,6 +759,7 @@ class CaveExplorer:
         if row < height-1: neighbors.append((row+1, col))
         if col > 0: neighbors.append((row, col-1))
         if col < width-1: neighbors.append((row, col+1))
+        rospy.sleep(0.5)
         return neighbors
     
     
@@ -787,7 +781,9 @@ class CaveExplorer:
         # frontiers_merged =self.is_valid_frontier(frontiers_merged)
         # print ( f'frontiers sorted distance + is valid: {len(frontiers_merged)}')
         # print ( 'frontiers sorted')
+        rospy.sleep(0.5)
         return frontiers_merged
+    
     
     def merge_close_frontiers_to_one(self, frontiers):
         merged_frontiers = []
@@ -811,10 +807,14 @@ class CaveExplorer:
                 avg_y = sum(f[1] for f in close_frontiers) / len(close_frontiers)
                 merged_frontiers.append([avg_x, avg_y])
 
+        rospy.sleep(0.5)
         return merged_frontiers
 
+
+
     def compute_distance_between_points(self, point1, point2):
-        return np.sqrt((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2)
+        return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
+        
         
     def compute_distance(self, frontier):
         map_res = self.current_map_.info.resolution
@@ -822,8 +822,9 @@ class CaveExplorer:
         x, y = frontier
         frontier_x = x * map_res + map_origin.x
         frontier_y = y * map_res + map_origin.y
-        distance = np.sqrt((frontier_x - self.current_position.x ) ** 2 + (frontier_y - self.current_position.y ) ** 2)
+        distance = np.hypot((frontier_x - self.current_position.x ), (frontier_y - self.current_position.y ))
         return distance
+        
         
     def is_valid_frontier(self, frontier_point):
         # """ Check if the frontier point is far enough from all visited frontiers. """
@@ -831,14 +832,13 @@ class CaveExplorer:
         
         for visited_point in self.visited_frontiers:
             # Calculate Euclidean distance between the frontier and visited point
-            distance = np.sqrt((frontier_point[0] - visited_point[0]) ** 2 + 
-                            (frontier_point[1] - visited_point[1]) ** 2)
+            distance = np.hypot((frontier_point[0] - visited_point[0]), (frontier_point[1] - visited_point[1]))
             if distance < min_distance:
                 return False  # The frontier is too close to a visited point
-        
+            
+        rospy.sleep(0.5)
         return True
-        
-        
+           
     
     def move_to_frontier(self, frontier):
         map_resolution = self.current_map_.info.resolution
@@ -863,6 +863,8 @@ class CaveExplorer:
             
             # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
+        
+        rospy.sleep(0.5)
             
         
     def index_to_position(self, index):
@@ -874,10 +876,12 @@ class CaveExplorer:
         
         x = (index % width) * resolution + origin_x
         y = (index // width) * resolution + origin_y
+        
+        rospy.sleep(0.5)
+        
         return Point(x, y, 0)  # Return as a Point object
 
 
-  
     def main_loop(self):
 
         while not rospy.is_shutdown():
@@ -914,8 +918,7 @@ class CaveExplorer:
 
             #######################################################
             # Delay so the loop doesn't run too fast
-            rospy.sleep(0.2)
-
+            # rospy.sleep(0.5)
 
 
 if __name__ == '__main__':
@@ -928,7 +931,3 @@ if __name__ == '__main__':
 
     # Loop forever while processing callbacks
     cave_explorer.main_loop()
-
-
-
-
