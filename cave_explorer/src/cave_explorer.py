@@ -109,6 +109,34 @@ class ExplorationsState(Enum):
 
 class CaveExplorer:
     def __init__(self):
+        
+        
+        # Initialize YOLO model for object detection
+        print('----------------------------------------------------------------')
+        print('----------------------------------------------------------------')
+ 
+        
+        self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
+        self.path = os.path.abspath(__file__)
+        print(self.path)
+
+        self.src_dir = os.path.dirname(self.path)
+        print(self.src_dir)
+        
+        self.parent_dir = os.path.abspath(os.path.join(self.src_dir, '..', '..'))
+        print(self.parent_dir)
+        
+        self.model_path = os.path.join(self.parent_dir, 'cam_assist/src/test_train/yolov11s_trained_optimized.pt')
+        print(self.model_path)
+        
+        self.model_ = YOLO(self.model_path)
+        print(self.model_)
+        rospy.loginfo(f"Using YOLO model on device: {self.device_}")
+
+        print('----------------------------------------------------------------')
+        print('----------------------------------------------------------------')
+        
+        
         # Variables/Flags for perception
         self.localised_ = False
         self.artifact_found_ = False
@@ -151,15 +179,8 @@ class CaveExplorer:
         self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.laser_sub_ = rospy.Subscriber('/scan', LaserScan, self.laser_callback, queue_size=1)
 
-        # Initialize YOLO model for object detection
-        self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
-        path = os.path.abspath(__file__)
-        src_dir = os.path.dirname(path)
-        parent_dir = os.path.abspath(os.path.join(src_dir, '..', '..'))
-        model_path = os.path.join(parent_dir, 'cam_assist/src/test_train/yolov11s_trained_optimized.pt')
-        self.model_ = YOLO(model_path)
-        rospy.loginfo(f"Using YOLO model on device: {self.device_}")
 
+        
         # Depth and scan data handling
         self.depth_data_ = None
         self.base_2_depth_cam = SE3(0.5, 0, 0.9) @ SE3(0.005, 0.028, 0.013)
