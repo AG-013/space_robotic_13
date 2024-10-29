@@ -323,10 +323,11 @@ class CaveExplorer:
             rospy.loginfo('Sending goal...')
             self.move_base_action_client_.send_goal(action_goal.goal)
 
+    # Process lidar and check if a predictive node can be added to the prm
     def scan_callback(self, scan_msg):
         obstructed = 0
-        distance_threshold = 6
-        distance_set = 4
+        distance_threshold = 6 # How much free space is required to add a node
+        distance_set = 4 # How far away from current position node should be
         indices_of_interest=[355, 356, 357, 358, 0, 1, 2, 3, 4] # 10 degree window
         readings_in_range = [scan_msg.ranges[i] for i in indices_of_interest]
 
@@ -342,8 +343,9 @@ class CaveExplorer:
             front_y = pose.y + distance_set * math.sin(pose.theta)
             self.potential_node = Node(front_x, front_y, 0, 0)
 
+    # Update and connect nodes in the PRM
     def update_prm(self):
-        distance_threshold = 4
+        distance_threshold = 4 # How far away nodes should be
         distance = distance_threshold + 1
         node_num = len(self.nodes_)
         closest_node = 0
@@ -383,6 +385,7 @@ class CaveExplorer:
                     self.nodes_.append(Node(self.potential_node.x, self.potential_node.y, node_num, closest_node))
                     self.publish_prm()
 
+    # Update PRM Visualisation
     def publish_prm(self):
         # Get number of nodes in graph
         node_num = len(self.nodes_) - 1
@@ -404,7 +407,7 @@ class CaveExplorer:
         point_marker.color.r = 1.0
         point_marker.color.g = 0.0
         point_marker.color.b = 1.0
-        point_marker.color.a = 1.0  # Alpha (opacity)
+        point_marker.color.a = 1.0
         point_marker.lifetime = rospy.Duration(0)  # Marker will not disappear
         
         self.prm_graph_pub_.publish(point_marker)
@@ -422,6 +425,7 @@ class CaveExplorer:
             # Find all nodes that are 6 units or closer and connect them through the graph
             for node in self.nodes_:
                 current_distance = math.sqrt((self.nodes_[node_num].x - node.x) ** 2 + (self.nodes_[node_num].y - node.y) ** 2)
+                # Find all nodes closer than 6 units and connect them together
                 if current_distance < 6:
                     line_marker.points.append(Point(self.nodes_[node_num].x, self.nodes_[node_num].y, 0))
                     line_marker.points.append(Point(node.x, node.y, 0))
@@ -436,7 +440,7 @@ class CaveExplorer:
             line_marker.color.r = 0.5
             line_marker.color.g = 0.0
             line_marker.color.b = 0.5
-            line_marker.color.a = 1.0  # Alpha (opacity)
+            line_marker.color.a = 1.0 
             line_marker.lifetime = rospy.Duration(0)  # Marker will not disappear
             
             self.prm_graph_pub_.publish(line_marker)
