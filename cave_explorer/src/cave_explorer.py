@@ -347,9 +347,9 @@ class CaveExplorer:
                 
             elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
                 rospy.loginfo("Object planner started checkkiiiiiiiiiiiiiiiiiiiiiiing ............")
-                self.object_identified_scan()
+                self.object_identified_scan(action_state )
                                         
-    def object_identified_scan(self):
+    def object_identified_scan(self, action_state):
         # Ensure the object coordinates (x, y, theta) are initialized
         x_obj = None
         y_obj = None
@@ -382,16 +382,15 @@ class CaveExplorer:
             # Send the goal to move_base
             rospy.loginfo("Sending goal to move_base...")
             self.move_base_action_client_.send_goal(action_goal.goal)
+            
+            if action_state == actionlib.GoalStatus.SUCCEEDED:
+                print("Successfully reached the object!")
+                self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
+                
+            elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:  # Goal rejected or aborted
+                rospy.loginfo("Goal rejected or aborted.")
+                self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
 
-            # Wait briefly to allow the goal to be processed
-            rospy.sleep(0.5)
-
-            # Transition back to the exploration state
-            self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-        else:
-            # Handle the case where no object is detected
-            print('Object not found')
-            self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
  
         
 
@@ -464,11 +463,6 @@ class CaveExplorer:
             while rospy.Time.now() - start_time < rospy.Duration(15):  # 10-second timeout
                 action_state = self.move_base_action_client_.get_state()
                 
-                # Check if the object has been identified
-                if self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
-                    rospy.loginfo("Object identified, stopping exploration.")
-                    return
-                
                 # Check if the goal has been reached successfully
                 if action_state == actionlib.GoalStatus.SUCCEEDED:
                     rospy.loginfo("Successfully reached the frontier!")
@@ -480,7 +474,12 @@ class CaveExplorer:
                     rospy.loginfo("Goal rejected or aborted.")
                     self.exploration_state_ = ExplorationsState.HANDLE_REJECTED_FRONTIER
                     break  # Break out of the inner loop to attempt the next frontier
-                            
+                
+                # Check if the object has been identified
+                elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
+                    rospy.loginfo("Object identified, stopping exploration.")
+                    return
+                                            
                 # If the loop ends due to timeout, handle the timeout case
             if rospy.Time.now() - start_time >= rospy.Duration(15):
                 rospy.loginfo("Timeout reached.")
