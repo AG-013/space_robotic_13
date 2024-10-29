@@ -217,7 +217,6 @@ class CaveExplorer:
             rospy.sleep(0.1)
 
     def process_image(self):
-        # Example image processing logic
         try:
             classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
 
@@ -230,6 +229,11 @@ class CaveExplorer:
             # print('------------------------------------------------------------')
             results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
 
+            
+            # 
+            self.mineral_artefacts = []
+            self.mushroom_artefacts = []
+            
             # Draw bounding boxes on the image
             for result in results:
                 boxes = result.boxes
@@ -277,10 +281,9 @@ class CaveExplorer:
 
                                 if not already_exists:
                                     artefact_list.append(art_xyz)
+                                    
+                                    self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
 
-                                    # # Start the go_to_artifact in a new thread to allow image_callback to continue
-                                    # nav_thread = threading.Thread(target=self.go_to_artifact, args=(art_xyz,))
-                                    # nav_thread.start()
                         else:
                             # Draw rectangle and label with warning color (red)
                             cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
@@ -339,9 +342,31 @@ class CaveExplorer:
         # Stop the robot
         twist = Twist()
         self.cmd_vel_pub_.publish(twist)
-        
+        object_coord = [0, 0, 0]  # Object coordinates
         # identify object coordinates and move towards it align so that the object is in the center of the camera move towards the object and 
-        
+        # >> put in object coordinates here 
+        # - put in object_coord = [x, y , theta] here
+        x , y , theta = object_coord
+        # Send a goal to move_base to explore the selected frontier
+        map_resolution = self.current_map_.info.resolution
+        map_origin = self.current_map_.info.origin.position
+
+        pose_2d = Pose2D
+            # Move forward 10m
+        pose_2d.x = x*map_resolution +map_origin.x
+        pose_2d.y = y * map_resolution + map_origin.y
+        pose_2d.theta = theta  * math.pi/2
+        print (f'x:{pose_2d.x} , y:{pose_2d.y}')
+ 
+        # Send a goal to "move_base" with "self.move_base_action_client_"
+        action_goal = MoveBaseActionGoal()
+        action_goal.goal.target_pose.header.frame_id = "map"
+        action_goal.goal_id = self.goal_counter_
+        self.goal_counter_ = self.goal_counter_ + 1
+        action_goal.goal.target_pose.pose = self.pose2d_to_pose(pose_2d)
+        # sending the goal to move base
+        self.move_base_action_client_.send_goal(action_goal.goal)
+        rospy.sleep(0.5)
         # Return to the exploration state
         self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         
@@ -613,9 +638,9 @@ class CaveExplorer:
                 print("Exploration preempted!")
                 self.exploration_done_ = False
                 action_state = actionlib.GoalStatus.PREEMPTING
-            # elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE) and (self.exploration_planner == OBJECT_IDENTIFIED_SCAN)
-            #     print (' moving to object  ')
-            #     self.exploration_done_= False
+            elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE) and (self.exploration_planner == ExplorationsState.OBJECT_IDENTIFIED_SCAN):
+                print (' moving to object  ')
+                self.exploration_done_= False
                 ## put in change state and call object scan 
 
             #######################################################
