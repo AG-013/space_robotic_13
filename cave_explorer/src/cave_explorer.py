@@ -112,30 +112,13 @@ class CaveExplorer:
         
         
         # Initialize YOLO model for object detection
-        print('----------------------------------------------------------------')
-        print('----------------------------------------------------------------')
- 
-        
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
         self.path = os.path.abspath(__file__)
-        print(self.path)
-
         self.src_dir = os.path.dirname(self.path)
-        print(self.src_dir)
-        
         self.parent_dir = os.path.abspath(os.path.join(self.src_dir, '..', '..'))
-        print(self.parent_dir)
-        
         self.model_path = os.path.join(self.parent_dir, 'cam_assist/src/test_train/yolov11s_trained_optimized.pt')
-        print(self.model_path)
-        
         self.model_ = YOLO(self.model_path)
-        print(self.model_)
         rospy.loginfo(f"Using YOLO model on device: {self.device_}")
-
-        print('----------------------------------------------------------------')
-        print('----------------------------------------------------------------')
-        
         
         # Variables/Flags for perception
         self.localised_ = False
@@ -179,13 +162,13 @@ class CaveExplorer:
         self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.laser_sub_ = rospy.Subscriber('/scan', LaserScan, self.laser_callback, queue_size=1)
 
-
-        
         # Depth and scan data handling
         self.depth_data_ = None
         self.base_2_depth_cam = SE3(0.5, 0, 0.9) @ SE3(0.005, 0.028, 0.013)
         self.scan_lock = threading.Lock()
         self.scan_data = None
+        
+        self.current_map_ = None
 
         # Artifact storage
         self.mineral_artefacts = []
@@ -196,6 +179,7 @@ class CaveExplorer:
 
         # Timer to publish artifact markers
         self.marker_timer = rospy.Timer(rospy.Duration(0.5), self.publish_artefact_markers)
+        self.image_pub_ = rospy.Publisher("/detections_image", Image, queue_size=5)
 
 
     def depth_callback(self, depth_msg):
@@ -269,10 +253,55 @@ class CaveExplorer:
             marker_id += 1  # Increment for the next marker
 
 
+    def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
+        # Check if data is available
+        if not self.depth_data_:
+            rospy.logwarn("Depth message not received yet!")
+            return None
+        
+        # Get current robot pose transformation
+        (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+        x, y, z = trans
+        qz = rot[2]
+        qw = rot[3]
+        
+        theta = wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
+        
+        # Create robot pose transformation
+        robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
+
+        
+        # Extract point from depth data
+        point = list(point_cloud2.read_points(
+            self.depth_data_, 
+            field_names=("x", "y", "z"), 
+            skip_nans=True, 
+            uvs=[(pixel_x, pixel_y)]
+        ))
+        
+        if point:
+            # Convert point from camera frame to robot base frame
+            old_x, old_y, old_z = point[0]
+            
+            # Transform from camera optical frame to camera frame
+            x = old_z
+            y = -old_x
+            z = -old_y
+            
+            # Create point transformation
+            point_transform = SE3.Trans(x, y, z)
+            point_in_world = robot_pos @ self.base_2_depth_cam @ point_transform
+            
+            # Extract the translation components (t) from the final transformation
+            return point_in_world.t # .t extract translational component
+
+        return None
+
+
     def image_callback(self, image_msg):
         # object identified
         # self.exploration_planner(ExplorationsState.OBJECT_IDENTIFIED_SCAN)
-        
+        rospy.logerr('IMAGE CALLBACK IS RUNNING')
         classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
 
         try:
@@ -283,6 +312,7 @@ class CaveExplorer:
             return
 
         # Process the image using YOLO
+        print('Device:', self.device_)
         results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
         
 
@@ -347,6 +377,7 @@ class CaveExplorer:
         # Convert the modified CV2 image back to a ROS Image message
         try:
             processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
+            rospy.logerr('Published Image!!!!!!!!!!')
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
             return
