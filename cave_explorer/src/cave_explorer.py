@@ -141,9 +141,9 @@ class CaveExplorer:
         qz = rot[2]
 
         if qz >= 0.:
-            pose.theta = wrap_angle(2. * math.acos(qw))
+            pose.theta = self.wrap_angle(2. * math.acos(qw))
         else: 
-            pose.theta = wrap_angle(-2. * math.acos(qw))
+            pose.theta = self.base_2_depth_camwrap_angle(-2. * math.acos(qw))
 
         return pose
 
@@ -160,7 +160,7 @@ class CaveExplorer:
         qz = rot[2]
         qw = rot[3]
         
-        theta = wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
+        theta = self.wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
         
         # Create robot pose transformation
         robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
@@ -219,13 +219,81 @@ class CaveExplorer:
     def process_image(self):
         # Example image processing logic
         try:
+            classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
+
             cv_image = self.cv_bridge_.imgmsg_to_cv2(self.image_data, "bgr8")
             # Perform image detection or processing here (e.g., YOLO, feature detection, etc.)
+
+            # Process the image using YOLO
+            # print('------------------------------------------------------------')
+            # print('USING CUDA:', self.device_)
+            # print('------------------------------------------------------------')
+            results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
+
+            # Draw bounding boxes on the image
+            for result in results:
+                boxes = result.boxes
+                for box in boxes:
+                    confidence = box.conf[0].item()  # Confidence score
+
+                    # Only process boxes with confidence above the threshold
+                    confidence_threshold = 0.5
+                    if confidence >= confidence_threshold:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                        class_id = int(box.cls.item())  # Get the class ID from the tensor
+                        label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
+
+                        # Calculate and print center point of the bounding box
+                        center_x = (x1 + x2) // 2
+                        center_y = (y1 + y2) // 2
+                        # rospy.loginfo(f"Center of {classes[class_id]}: ({center_x}, {center_y})")
+
+                        # Get the 3D coordinates
+                        art_xyz = self.get_posed_3d(center_x, center_y)
+
+                        # Check if art_xyz is None before accessing its elements
+                        if art_xyz is not None:
+                            # Draw rectangle and label
+                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
+
+                            # Detecting Mineral and Mushroom
+                            if class_id == 1 or class_id == 4:
+                                if class_id == 1:
+                                    artefact_list = self.mineral_artefacts
+                                else:
+                                    artefact_list = self.mushroom_artefacts
+                                
+                                # Check if it doesn't already exist
+                                already_exists = False
+                                _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
+                                for artefact in artefact_list:
+                                    if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_threshold:
+                                        continue
+                                    else:
+                                        already_exists = True
+                                        break
+
+                                if not already_exists:
+                                    artefact_list.append(art_xyz)
+
+                                    # # Start the go_to_artifact in a new thread to allow image_callback to continue
+                                    # nav_thread = threading.Thread(target=self.go_to_artifact, args=(art_xyz,))
+                                    # nav_thread.start()
+                        else:
+                            # Draw rectangle and label with warning color (red)
+                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            # rospy.logwarn("Could not retrieve 3D coordinates.")
+                
             # Publish processed image
             processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
             self.image_pub_.publish(processed_msg)
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
+        except Exception as e:
+            rospy.logerr(f"Unexpected error: {e}")
 
     # Exploration planning thread #########################################################
     def exploration_loop(self):
@@ -266,29 +334,7 @@ class CaveExplorer:
             elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
                 rospy.loginfo("Object identified.")
                 self.object_identified_scan()
-                            
-    def wrap_angle(self, angle):
-        # Function to wrap an angle between 0 and 2*Pi
-        while angle < 0.0:
-            angle = angle + 2 * math.pi
-
-        while angle > 2 * math.pi:
-            angle = angle - 2 * math.pi
-
-        return angle
-
-
-    def pose2d_to_pose(self ,pose_2d):
-        pose = Pose()
-
-        pose.position.x = pose_2d.x
-        pose.position.y = pose_2d.y
-
-        pose.orientation.w = math.cos(pose_2d.theta / 2.0)
-        pose.orientation.z = math.sin(pose_2d.theta / 2.0)
-
-        return pose
-            
+                                        
     def object_identified_scan(self):
         # Stop the robot
         twist = Twist()
@@ -523,7 +569,7 @@ class CaveExplorer:
 
         
         return Point(x, y, 0)  # Return as a Point object
-    def wrap_angle(angle):
+    def wrap_angle(self , angle):
         # Function to wrap an angle between 0 and 2*Pi
         while angle < 0.0:
             angle = angle + 2 * math.pi
