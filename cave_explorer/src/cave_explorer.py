@@ -11,6 +11,7 @@ from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Odometry
 import tf
 from std_srvs.srv import Empty
+from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from geometry_msgs.msg import Pose2D
@@ -123,6 +124,10 @@ class CaveExplorer:
         #Subscriber of the pose
         self.odom_sub_ = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.odom_ = None
+        
+        #Subscriber to the laser scan
+        self.laser_sub_ = rospy.Subscriber('/scan', LaserScan, self.laser_callback)
+        self.laser_scan_ = None
 
         # map service
     def get_pose_2d(self):
@@ -181,6 +186,14 @@ class CaveExplorer:
         # Extract twist 
         linear = self.odom_.twist.twist.linear
         angular = self.odom_.twist.twist.angular
+        
+    def laser_callback(self,laser_sub_):
+        self.laser_scan_ = laser_sub_
+        # Extract laser scan data
+        rospy.loginfo ("Laser received")
+        self.scan_ranges = self.laser_scan_.ranges
+        
+        
         
 
     
