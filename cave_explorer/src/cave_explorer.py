@@ -23,8 +23,9 @@ import tf
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs import point_cloud2
-from geometry_msgs.msg import Twist, Pose2D, Pose, Point
+from geometry_msgs.msg import Twist, Pose2D, Pose, Point , Quaternion
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
+import tf
 import actionlib
 import rospy
 import roslib
@@ -70,6 +71,7 @@ class CaveExplorer:
         self.scan_lock = threading.Lock()
         self.map_lock = threading.Lock()
         self.image_lock = threading.Lock()
+        self.odom_lock = threading.Lock()
 
 
         self.current_map_ = None
@@ -102,6 +104,7 @@ class CaveExplorer:
         # Subscribers
         self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
         self.depth_sub_ = rospy.Subscriber("/camera/depth/points", PointCloud2, self.depth_callback, queue_size=1)
+        self.odom_sub_ = rospy.Subscriber("/odom", Odometry, self.odom_callback, queue_size=1)
         
         self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
 
@@ -126,8 +129,6 @@ class CaveExplorer:
 
 
 
-
-
     def get_pose_2d(self):
 
         # Lookup the latest transform
@@ -144,54 +145,103 @@ class CaveExplorer:
         if qz >= 0.:
             pose.theta = self.wrap_angle(2. * math.acos(qw))
         else: 
-            pose.theta = self.base_2_depth_camwrap_angle(-2. * math.acos(qw))
+            pose.theta = self.wrap_angle(-2. * math.acos(qw))
+
+        print("pose: ", pose)
 
         return pose
 
 
     def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
-        # Check if data is available
+        # Check if depth data is available
         if not self.depth_data_:
             rospy.logwarn("Depth message not received yet!")
             return None
-        
-        # Get current robot pose transformation
+
+        # Get current robot pose transformation from 'map' to 'base_link'
         (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
         x, y, z = trans
         qz = rot[2]
         qw = rot[3]
-        
-        theta = self.wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
-        
-        # Create robot pose transformation
-        robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
 
-        
-        # Extract point from depth data
+        # Calculate theta based on quaternion values
+        theta = self.wrap_angle(2.0 * math.acos(qw)) if qz >= 0.0 else self.wrap_angle(-2.0 * math.acos(qw))
+
+        # Create robot pose transformation using SE3
+        robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of full RPY rotation
+
+        # Extract point from depth data using pixel coordinates
         point = list(point_cloud2.read_points(
-            self.depth_data_, 
-            field_names=("x", "y", "z"), 
-            skip_nans=True, 
+            self.depth_data_,
+            field_names=("x", "y", "z"),
+            skip_nans=True,
             uvs=[(pixel_x, pixel_y)]
         ))
-        
+
         if point:
-            # Convert point from camera frame to robot base frame
+            # Convert point from camera optical frame to robot base frame
             old_x, old_y, old_z = point[0]
             
-            # Transform from camera optical frame to camera frame
+            # Transform from camera optical frame to camera frame (Realsense camera)
             x = old_z
             y = -old_x
             z = -old_y
-            
+
             # Create point transformation
             point_transform = SE3.Trans(x, y, z)
             point_in_world = robot_pos @ self.base_2_depth_cam @ point_transform
-            
+
             # Extract the translation components (t) from the final transformation
-            return point_in_world.t # .t extract translational component
+            return point_in_world.t  # .t extracts the translational component as a tuple (x, y, z)
 
         return None
+
+    
+
+
+    # def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
+    #     # Check if data is available
+    #     if not self.depth_data_:
+    #         rospy.logwarn("Depth message not received yet!")
+    #         return None
+        
+    #     # Get current robot pose transformation
+    #     (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+    #     x, y, z = trans
+    #     qz = rot[2]
+    #     qw = rot[3]
+        
+    #     theta = self.wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
+        
+    #     # Create robot pose transformation
+    #     robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of RPY
+
+        
+    #     # Extract point from depth data
+    #     point = list(point_cloud2.read_points(
+    #         self.depth_data_, 
+    #         field_names=("x", "y", "z"), 
+    #         skip_nans=True, 
+    #         uvs=[(pixel_x, pixel_y)]
+    #     ))
+        
+    #     if point:
+    #         # Convert point from camera frame to robot base frame
+    #         old_x, old_y, old_z = point[0]
+            
+    #         # Transform from camera optical frame to camera frame
+    #         x = old_z
+    #         y = -old_x
+    #         z = -old_y
+            
+    #         # Create point transformation
+    #         point_transform = SE3.Trans(x, y, z)
+    #         point_in_world = robot_pos @ self.base_2_depth_cam @ point_transform
+            
+    #         # Extract the translation components (t) from the final transformation
+    #         return point_in_world.t # .t extract translational component
+
+    #     return None
 
 
     # Callback functions with locks #######################################################
@@ -208,7 +258,11 @@ class CaveExplorer:
             if self.current_map_ is None or self.current_map_.header.stamp != map_msg.header.stamp:
                 rospy.loginfo("Map updated")
                 self.current_map_ = map_msg
-
+                
+    def odom_callback(self, odom_msg):
+        with self.odom_lock:
+            self.current_position = odom_msg.pose.pose.position
+            self.current_orientation = odom_msg.pose.pose.orientation
     # Image processing thread ############################################################
     def process_image_continuously(self):
         while not rospy.is_shutdown():
@@ -275,20 +329,24 @@ class CaveExplorer:
                                 _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
                                 for artefact in self.artefact_list:
                                     if self.is_artifact_far_enough(artefact, self.art_xyz, _art_art_dist_threshold):
+                                        self.exploration_planner = ExplorationsState.WAITING_FOR_MAP
                                         continue
                                     else:
                                         already_exists = True
+                                        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
                                         break
 
                                 if not already_exists:
                                     self.artefact_list.append(self.art_xyz)
                                     
                                     self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
+                                    rospy.sleep(0.5)
 
                         else:
                             # Draw rectangle and label with warning color (red)
                             cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
                             cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            rospy.sleep(0.5)
                             # rospy.logwarn("Could not retrieve 3D coordinates.")
                 
             # Publish processed image
@@ -340,33 +398,62 @@ class CaveExplorer:
                 rospy.loginfo("Exploration completed successfully.")
                 
             elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
-                rospy.loginfo("Object identified.")
+                rospy.loginfo("Object planner started checkkiiiiiiiiiiiiiiiiiiiiiiing ............")
                 self.object_identified_scan()
                                         
     def object_identified_scan(self):
-        # Stop the robot
+        # Set the object coordinates to None
         x_obj = None
         y_obj = None
         theta_obj = None
+        
+        
         # identify object coordinates and move towards it align so that the object is in the center of the camera move towards the object and 
         # >> put in object coordinates here 
         # - put in object_coord = [x, y , theta] here
         if self.art_xyz is not None:
+            
+            print ( "sending stop command")
+                    # Stop the robot by publishing a zero velocity Twist message
+            stop_twist = Twist()  
+            stop_twist.linear.x = 0.0
+            stop_twist.linear.y = 0.0
+            stop_twist.linear.z = 0.0
+            stop_twist.angular.x = 0.0
+            stop_twist.angular.y = 0.0
+            stop_twist.angular.z = 0.0
+
+            # Publish the stop message to the cmd_vel topic
+            self.cmd_vel_pub_.publish(stop_twist)        
+
             
             print ('object found.........----------')
             x_obj = self.art_xyz[0]
             y_obj = self.art_xyz[1]
             theta_obj = self.art_xyz[2]
             
+            # Get robot's current position
+            robot_position = self.get_pose_2d()
+            robot_x = robot_position.x
+            robot_y = robot_position.y
+            
+            # convert quaternion to euler angles for robot orientation
+            qz = self.current_orientation.z
+            qw = self.current_orientation.w
+            robot_theta = self.wrap_angle(2.0 * math.acos(qw) if qz >= 0 else -2.0 * math.acos(qw))
             
             map_resolution = self.current_map_.info.resolution
             map_origin = self.current_map_.info.origin.position
+            
+            # transform object coordinates to map coordinates
+            global_x_obj = robot_x + (x_obj * math.cos(robot_theta) - y_obj*math.sin(robot_theta))
+            global_y_obj = robot_y + (x_obj * math.sin(robot_theta) + y_obj*math.cos(robot_theta))
 
             pose_2d = Pose2D
                 # Move forward 10m
-            pose_2d.x = x_obj*map_resolution +map_origin.x
-            pose_2d.y = y_obj * map_resolution + map_origin.y
-            pose_2d.theta = theta_obj  * math.pi/2
+            pose_2d.x = global_x_obj*map_resolution +map_origin.x
+            pose_2d.y = global_y_obj * map_resolution + map_origin.y
+            pose_2d.theta = self.wrap_angle(robot_theta + theta_obj  * math.pi/2)
             print (f'x:{pose_2d.x} , y:{pose_2d.y}')
             # Send a goal to "move_base" with "self.move_base_action_client_"
             action_goal = MoveBaseActionGoal()
@@ -382,6 +469,7 @@ class CaveExplorer:
 
         else: 
             print ('object not found')
+            self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         # Send a goal to move_base to explore the selected frontier
  
         
@@ -432,12 +520,12 @@ class CaveExplorer:
         
         # Implement logic for changing planner to object detection
         # Wait for artefact_list to be populated
-        while not self.artefact_list:
-            rospy.sleep(0.1)
-        for artefact in self.artefact_list:
+        # while not self.artefact_list:
+        #     rospy.sleep(0.1)
+        # for artefact in self.artefact_list:
 
-            if self.is_artifact_far_enough(artefact, self.art_xyz, 10):
-                self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
+        #     if self.is_artifact_far_enough(artefact, self.art_xyz, 10):
+        #         self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
                 # Ensure there is a selected frontier to attempt
                 while self.selected_frontier:
                     # Take the current frontier to move towards
@@ -659,7 +747,8 @@ class CaveExplorer:
             
             if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
                 print("Successfully explored!")
-                self.exploration_done_ = True
+                # if frontiers 
+                #     self.exploration_done_ = True
             elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE):
                 print("Exploration preempted!")
                 self.exploration_done_ = False
