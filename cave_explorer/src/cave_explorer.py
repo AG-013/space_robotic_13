@@ -283,6 +283,12 @@ class CaveExplorer:
             self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
 
     def handle_moving_to_frontier(self, action_state):
+        
+        ## as the robot moves to the frontier, it will check object detection
+        ## if object detected, it will stop and move towards the object
+        
+        ## implement logic for changing planner to object detection
+        
         # Ensure there is a selected frontier to attempt
         while self.selected_frontier:
             # Take the current frontier to move towards
