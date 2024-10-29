@@ -88,6 +88,7 @@ class CaveExplorer:
         # Variables/Flags for perception
         self.localised_ = False
         self.artifact_found_ = False
+        self.artefact_list = []
 
 
         # Wait for the transform from map to base_link
@@ -231,8 +232,8 @@ class CaveExplorer:
 
             
             # 
-            self.mineral_artefacts = []
-            self.mushroom_artefacts = []
+            mineral_artefacts = []
+            mushroom_artefacts = []
             
             # Draw bounding boxes on the image
             for result in results:
@@ -253,10 +254,10 @@ class CaveExplorer:
                         # rospy.loginfo(f"Center of {classes[class_id]}: ({center_x}, {center_y})")
 
                         # Get the 3D coordinates
-                        art_xyz = self.get_posed_3d(center_x, center_y)
+                        self.art_xyz = self.get_posed_3d(center_x, center_y)
 
                         # Check if art_xyz is None before accessing its elements
-                        if art_xyz is not None:
+                        if self.art_xyz is not None:
                             # Draw rectangle and label
                             cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -265,22 +266,22 @@ class CaveExplorer:
                             # Detecting Mineral and Mushroom
                             if class_id == 1 or class_id == 4:
                                 if class_id == 1:
-                                    artefact_list = self.mineral_artefacts
+                                    self.artefact_list = mineral_artefacts
                                 else:
-                                    artefact_list = self.mushroom_artefacts
+                                    self.artefact_list = mushroom_artefacts
                                 
                                 # Check if it doesn't already exist
                                 already_exists = False
                                 _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
-                                for artefact in artefact_list:
-                                    if math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > _art_art_dist_threshold:
+                                for artefact in self.artefact_list:
+                                    if self.is_artifact_far_enough(artefact, self.art_xyz, _art_art_dist_threshold):
                                         continue
                                     else:
                                         already_exists = True
                                         break
 
                                 if not already_exists:
-                                    artefact_list.append(art_xyz)
+                                    self.artefact_list.append(self.art_xyz)
                                     
                                     self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
 
@@ -297,6 +298,10 @@ class CaveExplorer:
             rospy.logerr(f"CvBridge Error: {e}")
         except Exception as e:
             rospy.logerr(f"Unexpected error: {e}")
+            
+            
+    def is_artifact_far_enough(self , artefact, art_xyz, threshold):
+        return math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > threshold
 
     # Exploration planning thread #########################################################
     def exploration_loop(self):
@@ -340,35 +345,45 @@ class CaveExplorer:
                                         
     def object_identified_scan(self):
         # Stop the robot
-        twist = Twist()
-        self.cmd_vel_pub_.publish(twist)
-        object_coord = [0, 0, 0]  # Object coordinates
+        x_obj = None
+        y_obj = None
+        theta_obj = None
         # identify object coordinates and move towards it align so that the object is in the center of the camera move towards the object and 
         # >> put in object coordinates here 
         # - put in object_coord = [x, y , theta] here
-        x , y , theta = object_coord
-        # Send a goal to move_base to explore the selected frontier
-        map_resolution = self.current_map_.info.resolution
-        map_origin = self.current_map_.info.origin.position
+        if self.art_xyz is not None:
+            
+            print ('object found.........----------')
+            x_obj = self.art_xyz[0]
+            y_obj = self.art_xyz[1]
+            theta_obj = self.art_xyz[2]
+            
+            
+            map_resolution = self.current_map_.info.resolution
+            map_origin = self.current_map_.info.origin.position
 
-        pose_2d = Pose2D
-            # Move forward 10m
-        pose_2d.x = x*map_resolution +map_origin.x
-        pose_2d.y = y * map_resolution + map_origin.y
-        pose_2d.theta = theta  * math.pi/2
-        print (f'x:{pose_2d.x} , y:{pose_2d.y}')
+            pose_2d = Pose2D
+                # Move forward 10m
+            pose_2d.x = x_obj*map_resolution +map_origin.x
+            pose_2d.y = y_obj * map_resolution + map_origin.y
+            pose_2d.theta = theta_obj  * math.pi/2
+            print (f'x:{pose_2d.x} , y:{pose_2d.y}')
+            # Send a goal to "move_base" with "self.move_base_action_client_"
+            action_goal = MoveBaseActionGoal()
+            action_goal.goal.target_pose.header.frame_id = "map"
+            action_goal.goal_id = self.goal_counter_
+            self.goal_counter_ = self.goal_counter_ + 1
+            action_goal.goal.target_pose.pose = self.pose2d_to_pose(pose_2d)
+            # sending the goal to move base
+            self.move_base_action_client_.send_goal(action_goal.goal)
+            rospy.sleep(0.5)
+            # Return to the exploration state
+            self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+
+        else: 
+            print ('object not found')
+        # Send a goal to move_base to explore the selected frontier
  
-        # Send a goal to "move_base" with "self.move_base_action_client_"
-        action_goal = MoveBaseActionGoal()
-        action_goal.goal.target_pose.header.frame_id = "map"
-        action_goal.goal_id = self.goal_counter_
-        self.goal_counter_ = self.goal_counter_ + 1
-        action_goal.goal.target_pose.pose = self.pose2d_to_pose(pose_2d)
-        # sending the goal to move base
-        self.move_base_action_client_.send_goal(action_goal.goal)
-        rospy.sleep(0.5)
-        # Return to the exploration state
-        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
         
 
     def handle_waiting_for_map(self):
@@ -413,54 +428,65 @@ class CaveExplorer:
     def handle_moving_to_frontier(self, action_state):
         
         # As robot moves to the frontier, it will check object detection - if object detected, it will stop and move towards the object
-        # Implement logic for changing planner to object detection
         
-        # Ensure there is a selected frontier to attempt
-        while self.selected_frontier:
-            # Take the current frontier to move towards
-            frontier = self.selected_frontier[0]
+        
+        # Implement logic for changing planner to object detection
+        # Wait for artefact_list to be populated
+        while not self.artefact_list:
+            rospy.sleep(0.1)
+        for artefact in self.artefact_list:
 
-            # Check if the current frontier is already visited
-            if tuple(frontier) in self.visited_frontiers:
-                # Remove the visited frontier and continue with the next one
-                self.selected_frontier.pop(0)
-                continue
+            if self.is_artifact_far_enough(artefact, self.art_xyz, 10):
+                self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
+                # Ensure there is a selected frontier to attempt
+                while self.selected_frontier:
+                    # Take the current frontier to move towards
+                    frontier = self.selected_frontier[0]
 
-            # Attempt to move to the selected frontier
-            self.move_to_frontier(frontier)
-            rospy.loginfo('Moving to frontier')
-            start_time = rospy.Time.now()
+                    # Check if the current frontier is already visited
+                    if tuple(frontier) in self.visited_frontiers:
+                        # Remove the visited frontier and continue with the next one
+                        self.selected_frontier.pop(0)
+                        continue
 
-            # Add this frontier to visited and remove it from the selected list
-            removed_frontier = self.selected_frontier.pop(0)
-            self.visited_frontiers.add(tuple(removed_frontier))
+                    # Attempt to move to the selected frontier
+                    self.move_to_frontier(frontier)
+                    rospy.loginfo('Moving to frontier')
+                    start_time = rospy.Time.now()
 
-            # Continuously check the state while moving toward the goal
-            while rospy.Time.now() - start_time < rospy.Duration(15):  # 10-second timeout
-                action_state = self.move_base_action_client_.get_state()
+                    # Add this frontier to visited and remove it from the selected list
+                    removed_frontier = self.selected_frontier.pop(0)
+                    self.visited_frontiers.add(tuple(removed_frontier))
 
-                # Check if the goal has been reached successfully
-                if action_state == actionlib.GoalStatus.SUCCEEDED:
-                    rospy.loginfo("Successfully reached the frontier!")
-                    self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-                    return  # Stop processing further frontiers in this call
+                    # Continuously check the state while moving toward the goal
+                    while rospy.Time.now() - start_time < rospy.Duration(15):  # 10-second timeout
+                        action_state = self.move_base_action_client_.get_state()
 
-                # Check if the goal was rejected or aborted
-                elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
-                    rospy.loginfo("Goal rejected or aborted.")
-                    self.exploration_state_ = ExplorationsState.HANDLE_REJECTED_FRONTIER
-                    break  # Break out of the inner loop to attempt the next frontier
-                
-            # If the loop ends due to timeout, handle the timeout case
-            if rospy.Time.now() - start_time >= rospy.Duration(15):
-                rospy.loginfo("Timeout reached.")
-                self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-                break  # Stop processing further frontiers in this call
+                        # Check if the goal has been reached successfully
+                        if action_state == actionlib.GoalStatus.SUCCEEDED:
+                            rospy.loginfo("Successfully reached the frontier!")
+                            self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+                            return  # Stop processing further frontiers in this call
 
-        # Check if no more frontiers are available
-        if not self.selected_frontier:
-            rospy.loginfo("No more frontiers to explore.")
-            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
+                        # Check if the goal was rejected or aborted
+                        elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
+                            rospy.loginfo("Goal rejected or aborted.")
+                            self.exploration_state_ = ExplorationsState.HANDLE_REJECTED_FRONTIER
+                            break  # Break out of the inner loop to attempt the next frontier
+                        
+                    # If the loop ends due to timeout, handle the timeout case
+                    if rospy.Time.now() - start_time >= rospy.Duration(15):
+                        rospy.loginfo("Timeout reached.")
+                        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+                        break  # Stop processing further frontiers in this call
+
+                # Check if no more frontiers are available
+                if not self.selected_frontier:
+                    rospy.loginfo("No more frontiers to explore.")
+                    self.exploration_state_ = ExplorationsState.EXPLORED_MAP
+                    
+                return
+
             
             
     def handle_timeout(self):
