@@ -32,6 +32,7 @@ class PRPM:
         while not rospy.is_shutdown() and not self.tf_listener_.canTransform("map", "base_link", rospy.Time(0)):
             rospy.sleep(0.1)
             rospy.loginfo("Waiting for transform... Have you launched a SLAM node?")        
+        rospy.loginfo("Accepted, node is running")        
 
         self.nodes_ = []
         self.potential_node = 0

@@ -77,9 +77,9 @@ class CaveExplorer:
                 
                 if response.success:
                     try:
-                        x, y = map(float, response.message.split(','))
+                        x, y, z= map(float, response.message.split(','))
                         # rospy.loginfo(f"Possible new artifact at X: {x:.2f}, Y: {y:.2f}")
-                        return (x, y)
+                        return (x, y, z)
                         
                     except ValueError as e:
                         rospy.logerr(f"Failed to parse coordinates: {str(e)}")
@@ -88,7 +88,7 @@ class CaveExplorer:
                     rospy.logwarn(response.message)
                     return None
             else:
-                rospy.logerr('NA MATE NOT INTEREST ATM THANKS!')
+                rospy.logerr('NOT ACCEPTING NEW ARTEFACTS AS IM BUSY GOING TO ONE')
                 
         except rospy.ServiceException as e:
             rospy.logerr(f"Service call failed: {str(e)}")
@@ -107,7 +107,7 @@ class CaveExplorer:
             if is_Unique:
                 self.artefacts_list.append(coords)
                 self.artefact_x_y = coords
-                rospy.logerr(f"NEW: Found artifact at X: {self.artefact_x_y[0]:.2f}, Y: {self.artefact_x_y[1]:.2f}")
+                rospy.logerr(f"NEW: Found artifact at X: {self.artefact_x_y[0]:.2f}, Y: {self.artefact_x_y[1]:.2f}, Theta: {self.artefact_x_y[2]:.2f}")
                 self.exploration_state_ = PlannerType.OBJECT_IDENTIFIED_SCAN
     ###########################################################################################################################
     
@@ -142,6 +142,7 @@ class CaveExplorer:
 
         elif self.exploration_state_ == PlannerType.EXPLORED_MAP:
             rospy.loginfo("Exploration completed successfully.")
+            rospy.sleep(1.0)
 
         elif self.exploration_state_ == PlannerType.OBJECT_IDENTIFIED_SCAN:
             rospy.loginfo("Object identified.")
@@ -170,7 +171,6 @@ class CaveExplorer:
             rospy.logwarn('No frontier selected.')
             self.exploration_state_ = PlannerType.EXPLORED_MAP
         else:
-
             rospy.loginfo('Frontier selected')
             self.exploration_state_ = PlannerType.MOVING_TO_FRONTIER
 
@@ -338,15 +338,11 @@ class CaveExplorer:
         self.move_base_action_client_.send_goal(action_goal.goal)
         
         
-    def send_goal_simple(self, frontier):
-        
-        map_resolution = self.current_map_.info.resolution
-        map_origin = self.current_map_.info.origin.position
-
+    def send_goal_simple(self, coordinate):
         pose_2d = Pose2D
-        pose_2d.x = frontier[0] - 3
-        pose_2d.y = frontier[1] - 3
-        pose_2d.theta = 0
+        pose_2d.x = coordinate[0]
+        pose_2d.y = coordinate[1]
+        pose_2d.theta = coordinate[2]
         # print(f'x:{pose_2d.x} , y:{pose_2d.y}')
 
         # Send a goal to "move_base" with "self.move_base_action_client_"
@@ -373,13 +369,15 @@ class CaveExplorer:
         action_state = self.move_base_action_client_.get_state()
         
         while action_state != actionlib.GoalStatus.SUCCEEDED:  # 10-second timeout
-            rospy.loginfo(f'Moving to Artefact Location, x:{self.artefact_x_y[0]} y:{self.artefact_x_y[1]}')
+            # rospy.loginfo(f'Moving to Artefact Location, x:{self.artefact_x_y[0]} y:{self.artefact_x_y[1]}')
             rospy.sleep(0.2)
             
             if action_state in {actionlib.GoalStatus.REJECTED,
                                 actionlib.GoalStatus.ABORTED,
                                 actionlib.GoalStatus.PREEMPTED}:
-                rospy.loginfo(f"Goal failed with state: {action_state}")
+                rospy.logerr(f"Goal failed with state: {action_state}, RETRYING!!!!!!!!!!!!")
+                return
+                
 
             action_state = self.move_base_action_client_.get_state()
         #############################################################################################
@@ -387,23 +385,40 @@ class CaveExplorer:
         # NEXT STATE ################################################################################
         self.exploration_state_ = PlannerType.SELECTING_FRONTIER
         #############################################################################################
-        
-        
+            
+            
     def offset_coordinates(self):
-        # """Modify the coordinates to move a specified distance away from the target."""
-        # x, y = self.artefact_x_y
-
-        # # Assuming theta (orientation) is available in radians, e.g. self.current_theta
-        # theta = self.current_theta  # Replace this with the actual way to get robot's current orientation
-
-        # # Calculate the offsets
-        # offset_x = distance * math.cos(theta)
-        # offset_y = distance * math.sin(theta)
-
-        # # Return the modified coordinates, moving away from the target by the specified distance
-        # self.artefact_x_y = (x - offset_x, y - offset_y)  # Move back in the opposite direction
-        pass
+        # Modify the coordinates to move a specified distance away from the target artifact.
+        x, y, theta_target = self.artefact_x_y
+        SAFE_DISTANCE = 2.75  # 3 meters away from the artifact
         
+        try:
+            # Get current robot position from tf
+            (trans, rot) = self.tf_listener_.lookupTransform('/map', '/base_link', rospy.Time(0))
+            current_x = trans[0]
+            current_y = trans[1]
+            
+            # Calculate vector from current position to artifact
+            dx = x - current_x
+            dy = y - current_y
+            
+            # Calculate angle to artifact
+            angle_to_artifact = math.atan2(dy, dx)
+            
+            # Calculate offset position
+            offset_x = x - SAFE_DISTANCE * math.cos(angle_to_artifact)
+            offset_y = y - SAFE_DISTANCE * math.sin(angle_to_artifact)
+            
+            # Update artifact coordinates with offset position and original orientation
+            self.artefact_x_y = (offset_x, offset_y, theta_target)
+            
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
+            rospy.logwarn(f"Could not get transform from map to base_link: {str(e)}")
+            # If we can't get the transform, just offset in the direction of theta_target
+            offset_x = x - SAFE_DISTANCE * math.cos(theta_target)
+            offset_y = y - SAFE_DISTANCE * math.sin(theta_target)
+            self.artefact_x_y = (offset_x, offset_y, theta_target)
+
         
 if __name__ == '__main__':
     # Create the ROS node

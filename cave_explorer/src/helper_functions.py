@@ -26,4 +26,4 @@ def pose2d_to_pose(pose_2d):
 
 
 def compute_distance_between_points(point1, point2):
-    return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
+    return math.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
