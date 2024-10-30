@@ -608,31 +608,7 @@ class CaveExplorer:
             self.last_goal = (x_obj, y_obj, theta_obj)
             print(f"[DEBUG] Last goal saved as -> x: {x_obj}, y: {y_obj}, theta: {theta_obj}")
 
-            # Wait for the goal to be executed and check the state
-            goal_rejected_threshold = rospy.Duration(5)  # Define how long to wait before checking if the goal is rejected
-            self.move_base_action_client_.wait_for_result(goal_rejected_threshold)
-            action_state = self.move_base_action_client_.get_state()
-            print(f"[DEBUG] Action state after waiting: {action_state}")
-            
-            # Handle goal success or failure based on the current state
-            if action_state == actionlib.GoalStatus.SUCCEEDED:
-                rospy.loginfo("Successfully reached the object!")
-                self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
-                
-            elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
-                rospy.loginfo("[DEBUG] Goal rejected or aborted. Cancelling goal and resuming exploration.")
-                self.move_base_action_client_.cancel_goal()
-                self.last_goal = None  # Clear the last goal
-                self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
-
-            # Small sleep to ensure actions are processed
-            rospy.sleep(2)
-        else:
-            # Handle the case where no object is detected
-            rospy.logwarn('[DEBUG] Object not found')
-            self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
-            rospy.sleep(2)
-
+  
     def exploration_planner(self, action_state):
         if action_state != actionlib.GoalStatus.ACTIVE:
             print('Exploration planner ............')
