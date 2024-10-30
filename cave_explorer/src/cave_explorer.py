@@ -91,7 +91,7 @@ class CaveExplorer:
         self.localised_ = False
         self.artifact_found_ = False
         self.artefact_list = []
-
+        self.art_xyz = None
 
         # Wait for the transform from map to base_link
         rospy.loginfo("Waiting for transform from map to base_link")
