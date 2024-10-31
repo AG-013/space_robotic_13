@@ -19,12 +19,15 @@ from geometry_msgs.msg import Pose2D
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import Image
+from sensor_msgs.msg import LaserScan
 from move_base_msgs.msg import MoveBaseAction, MoveBaseActionGoal
 import actionlib
 import random
 import copy
 from threading import Lock
 from enum import Enum
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 
 
 
@@ -44,11 +47,22 @@ def pose2d_to_pose(pose_2d):
     pose.position.x = pose_2d.x
     pose.position.y = pose_2d.y
 
-    pose.orientation.w = math.cos(pose_2d.theta)
+    pose.orientation.w = math.cos(pose_2d.theta / 2.0)
     pose.orientation.z = math.sin(pose_2d.theta / 2.0)
 
     return pose
 
+class Node:
+    def __init__(self, x, y, idx, link):
+
+        # Index of the node in the graph
+        self.idx = idx
+
+        # Position of node
+        self.x = x
+        self.y = y
+
+        self.link = link
 
 class PlannerType(Enum):
     ERROR = 0
@@ -111,6 +125,13 @@ class CaveExplorer:
         # Set confidence threshold
         confidence_threshold = 0.5
         self.confidence_threshold = confidence_threshold
+
+        self.prm_graph_pub_ = rospy.Publisher('prm_graph', Marker, queue_size=10)
+
+        self.lidar_sub_ =  rospy.Subscriber('/scan', LaserScan, self.scan_callback,queue_size=1)
+
+        self.nodes_ = []
+        self.potential_node = 0
 
     def get_pose_2d(self):
 
@@ -302,7 +323,131 @@ class CaveExplorer:
             rospy.loginfo('Sending goal...')
             self.move_base_action_client_.send_goal(action_goal.goal)
 
+    # Process lidar and check if a predictive node can be added to the prm
+    def scan_callback(self, scan_msg):
+        obstructed = 0
+        distance_threshold = 6 # How much free space is required to add a node
+        distance_set = 4 # How far away from current position node should be
+        indices_of_interest=[355, 356, 357, 358, 0, 1, 2, 3, 4] # 10 degree window
+        readings_in_range = [scan_msg.ranges[i] for i in indices_of_interest]
+
+        # Check if target range is clear and suitable for a point in the graph
+        for i in range(len(readings_in_range)):
+            if readings_in_range[i] < distance_threshold:
+                obstructed = 1   
+        if obstructed == 1:
+            self.potential_node = 0
+        else:
+            pose = self.get_pose_2d()
+            front_x = pose.x + distance_set * math.cos(pose.theta)
+            front_y = pose.y + distance_set * math.sin(pose.theta)
+            self.potential_node = Node(front_x, front_y, 0, 0)
+
+    # Update and connect nodes in the PRM
+    def update_prm(self):
+        distance_threshold = 4 # How far away nodes should be
+        distance = distance_threshold + 1
+        node_num = len(self.nodes_)
+        closest_node = 0
+        
+        pose = self.get_pose_2d()
+
+        # If no nodes exist, publish current position
+        if node_num == 0:
+            self.nodes_.append(Node(pose.x, pose.y, node_num, 0))
+            self.publish_prm()
+        else :
+            # Find closest node to current position
+            for node in self.nodes_:
+                current_distance = math.sqrt((pose.x - node.x) ** 2 + (pose.y - node.y) ** 2)
+                if current_distance < distance:
+                    distance = current_distance
+                    closest_node = node.idx
+
+            # If the node is further than threshold, publish it
+            if distance > distance_threshold:
+                self.nodes_.append(Node(pose.x, pose.y, node_num, closest_node))
+                self.publish_prm()
+
+            # Alternatively, there may be a potential node in front of the robot
+            elif self.potential_node != 0:
+                distance = 9999999999
+                proximity = 0
+                # Check whether this node is suitable based on proximity to existing nodes
+                for node in self.nodes_:
+                    current_distance = math.sqrt((self.potential_node.x - node.x) ** 2 + (self.potential_node.y - node.y) ** 2)
+                    if current_distance < distance:
+                        distance = current_distance
+                        closest_node = node.idx
+                    if distance_threshold > current_distance:
+                        proximity = 1
+                if proximity == 0:
+                    self.nodes_.append(Node(self.potential_node.x, self.potential_node.y, node_num, closest_node))
+                    self.publish_prm()
+
+    # Update PRM Visualisation
+    def publish_prm(self):
+        # Get number of nodes in graph
+        node_num = len(self.nodes_) - 1
+
+        # Graph Point publisher
+        point_marker = Marker()
+        point_marker.header.frame_id = "map"  # Use the appropriate frame
+        point_marker.header.stamp = rospy.Time.now()
+        point_marker.ns = "points"
+        point_marker.id = node_num
+        point_marker.type = Marker.SPHERE
+        point_marker.action = Marker.ADD
+
+        point_marker.pose.position = Point(self.nodes_[node_num].x, self.nodes_[node_num].y, 0)
+        point_marker.pose.orientation.w = 1.0  # No rotation
+        point_marker.scale.x = 1  # Sphere radius
+        point_marker.scale.y = 1
+        point_marker.scale.z = 1
+        point_marker.color.r = 1.0
+        point_marker.color.g = 0.0
+        point_marker.color.b = 1.0
+        point_marker.color.a = 1.0
+        point_marker.lifetime = rospy.Duration(0)  # Marker will not disappear
+        
+        self.prm_graph_pub_.publish(point_marker)
+
+        # Graph Line publisher
+        if node_num > 0:
+            line_marker = Marker()
+            line_marker.header.frame_id = "map"  # Use the appropriate frame
+            line_marker.header.stamp = rospy.Time.now()
+            line_marker.ns = "edges"
+            line_marker.id = node_num
+            line_marker.type = Marker.LINE_LIST
+            line_marker.action = Marker.ADD
+
+            # Find all nodes that are 6 units or closer and connect them through the graph
+            for node in self.nodes_:
+                current_distance = math.sqrt((self.nodes_[node_num].x - node.x) ** 2 + (self.nodes_[node_num].y - node.y) ** 2)
+                # Find all nodes closer than 6 units and connect them together
+                if current_distance < 6:
+                    line_marker.points.append(Point(self.nodes_[node_num].x, self.nodes_[node_num].y, 0))
+                    line_marker.points.append(Point(node.x, node.y, 0))
+
+            line_marker.pose.orientation.x = 0.0
+            line_marker.pose.orientation.y = 0.0
+            line_marker.pose.orientation.z = 0.0
+            line_marker.pose.orientation.w = 1.0
+            line_marker.scale.x = 0.25
+            line_marker.scale.y = 0.25
+            line_marker.scale.z = 0.25
+            line_marker.color.r = 0.5
+            line_marker.color.g = 0.0
+            line_marker.color.b = 0.5
+            line_marker.color.a = 1.0 
+            line_marker.lifetime = rospy.Duration(0)  # Marker will not disappear
+            
+            self.prm_graph_pub_.publish(line_marker)
+
     def main_loop(self):
+        # Give everything time to launch
+        rospy.sleep(1)
 
         while not rospy.is_shutdown():
 
@@ -351,6 +496,10 @@ class CaveExplorer:
             elif self.planner_type_ == PlannerType.RANDOM_GOAL:
                 self.planner_random_goal(action_state)
 
+
+            #######################################################
+            self.update_prm()
+            
 
             #######################################################
             # Delay so the loop doesn't run too fast
