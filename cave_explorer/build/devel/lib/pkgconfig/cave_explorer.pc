@@ -1,8 +1,0 @@
-prefix=/home/selimon/sr_ws/src/space_robotic_13/cave_explorer/build/devel
-
-Name: cave_explorer
-Description: Description of cave_explorer
-Version: 0.0.1
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
