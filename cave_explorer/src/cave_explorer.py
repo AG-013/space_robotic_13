@@ -431,6 +431,29 @@ class CaveExplorer:
             angle = angle - 2 * math.pi
 
         return angle
+
+    # def get_robot_heading(self):
+    #     """
+    #     Retrieve the robot's current heading (orientation) in the map frame.
+        
+    #     Returns:
+    #         float: The robot's heading angle in radians, with respect to the map frame.
+    #     """
+    #     try:
+    #         # Lookup the transform to get the robot's orientation in the map frame
+    #         (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_footprint', rospy.Time(0))
+
+    #         # Convert the quaternion to an Euler angle (yaw), which represents the heading
+    #         euler = tf.transformations.euler_from_quaternion(rot)
+    #         yaw = euler[2]  # yaw represents the heading angle
+
+    #         rospy.loginfo(f"Robot heading (yaw): {yaw:.2f} radians")
+    #         return yaw
+
+    #     except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+    #         rospy.logwarn("Failed to get robot heading, returning 0.")
+    #         return 0.0
+
  
     def pose2d_to_pose(self , pose_2d):
         pose = Pose()
