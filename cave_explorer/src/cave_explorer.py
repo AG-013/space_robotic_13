@@ -139,9 +139,9 @@ class CaveExplorer:
             
     def handle_selecting_frontier(self):
         
-        frontiers , visited = self.identify_frontiers(self.current_map_)
-        # print ( ' visited:__checks ::', visited)
-        print ( ' visited set : ' , len(self.visited_frontiers))
+        frontiers, visited  = self.identify_frontiers(self.current_map_)
+        print ( ' visi  ted set : ' , len(self.visited_frontiers))
+        print ('frontiers:', len(frontiers))
 
         if not frontiers:
             rospy.logwarn('No frontiers found.')
@@ -158,7 +158,7 @@ class CaveExplorer:
         # print ('filtered frontiers 2nd set:', filtered_frontier[1][:4])
         # print ('filtered frontiers 3rd set:', filtered_frontier[2][:4])
 
-        frontier_costs = [(frontier, self.frontier_cost(frontier)) for frontier in filtered_frontier if frontier is not None and len(frontier) > 5]
+        frontier_costs = [(frontier, self.frontier_cost(frontier)) for frontier in filtered_frontier if frontier is not None and len(frontier) > 3]
         print('frontier costs:', len(frontier_costs))
         
         # filtering out the invalid frontiers and inf cost frontiers    
@@ -173,13 +173,13 @@ class CaveExplorer:
             return
         
         # Sort the frontiers based on cost
-        print('valid frontier costs:', valid_frontier_costs[0][1])
+        # print('valid frontier costs:', valid_frontier_costs[0][1])
         sorted_frontiers = heapq.nsmallest(len(frontier_costs), frontier_costs, key=lambda x: x[1])
-        print('sorted frontiers:', len(sorted_frontiers))
-        print('sorted frontiers:', sorted_frontiers[0])
+        # print('sorted frontiers:', len(sorted_frontiers))
+        # print('sorted frontiers:', sorted_frontiers[0])
         # Select the frontier with the lowest cost
         self.selected_frontier = [frontier for frontier, cost in sorted_frontiers]
-        print ('selected frontier:', len(self.selected_frontier))
+        # print ('selected frontier:', len(self.selected_frontier))
         if not self.selected_frontier:
             rospy.logwarn('No frontier selected.')
             self.exploration_state_ = PlannerType.EXPLORED_MAP
@@ -219,7 +219,7 @@ class CaveExplorer:
                 self.selected_frontier.pop(0)
                 
             # Continuously check the state while moving toward the goal
-            while rospy.Time.now() - start_time < rospy.Duration(8):  # 10-second timeout
+            while rospy.Time.now() - start_time < rospy.Duration(15):  # 10-second timeout
                 action_state = self.move_base_action_client_.get_state()
 
                 # Check if the goal has been reached successfully
@@ -231,11 +231,12 @@ class CaveExplorer:
                 # Check if the goal was rejected or aborted
                 elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
                     rospy.loginfo("Goal rejected or aborted.")
+                    self.visited_frontiers.add(tuple(centroud_frntr))
                     self.exploration_state_ = PlannerType.HANDLE_REJECTED_FRONTIER
                     break  # Break out of the inner loop to attempt the next frontier
                 
             # If the loop ends due to timeout, handle the timeout case
-            if rospy.Time.now() - start_time >= rospy.Duration(8):
+            if rospy.Time.now() - start_time >= rospy.Duration(15):
                 rospy.loginfo("Timeout reached.")
                 self.exploration_state_ = PlannerType.WAITING_FOR_MAP
                 break  # Stop processing further frontiers in this call
@@ -352,13 +353,13 @@ class CaveExplorer:
         
         distance = self.compute_distance_to_frntr(frontier)
         size = len(frontier)  # size of the frontier
-        # orientation = self.compute_orn_frn (frontier)
+        orientation = self.compute_orn_frn (frontier)
         
         l_1 = 0.1
         l_2 = 0.8
         l_3 = 0.3
         
-        cost = l_1 * distance + l_2 * size  #l_3 * orientation
+        cost = l_1 * distance + l_2 * size  +l_3 * orientation
         return cost
 
     def compute_distance_to_frntr(self, frontier):
@@ -396,28 +397,28 @@ class CaveExplorer:
         # Get the map properties
         map_res = self.current_map_.info.resolution
         map_origin = self.current_map_.info.origin.position
+        
+        robot_pose = self.get_pose_2d()
+        robot_heading = robot_pose.theta
 
         # Assuming frontier is a collection of cells (x, y)
-        total_orientation = 0
+        orn_cost = 0
         for cell in frontier:
-            # Validate that cell is a coordinate pair (x, y)
-            if not isinstance(cell, (list, tuple)) or len(cell) != 2:
-                rospy.logwarn(f"Unexpected cell format: {cell}. Skipping...")
-                continue
-
+            # Calculate the real-world coordinates of the frontier cell
             frontier_x = cell[0] * map_res + map_origin.x
             frontier_y = cell[1] * map_res + map_origin.y
 
             # Compute the angle/orientation of this frontier cell with respect to the robot's current position
-            robot_pose = self.get_pose_2d()
             angle_to_cell = math.atan2(frontier_y - robot_pose.y, frontier_x - robot_pose.x)
             
             # Calculate the relative orientation cost (custom logic, modify as needed)
             orientation_diff = abs(angle_to_cell - robot_pose.theta)
-            total_orientation += orientation_diff
+            orientation_diff_1 = min(orientation_diff, 2 * math.pi - orientation_diff)  # Normalize to [0, π]
+
+            orn_cost += orientation_diff_1
 
         # Calculate an average orientation if there are multiple cells
-        avg_orientation = total_orientation / len(frontier) if frontier else 0
+        avg_orientation = orn_cost / len(frontier) if frontier else 0
 
         return avg_orientation
                 
