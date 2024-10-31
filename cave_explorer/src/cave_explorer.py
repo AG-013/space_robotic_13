@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+
 # Math Modules
 # May have to install these packages:
 # pip install roboticstoolbox-python
@@ -24,6 +25,8 @@ from std_srvs.srv import Trigger, TriggerResponse  # Import the Trigger service 
 
     
 class CaveExplorer:
+    
+    TIME_OUT_MAX = 27.5
     
     def __init__(self):
         rospy.init_node('cave_explorer', anonymous=True)  # Initialize the ROS node
@@ -190,7 +193,7 @@ class CaveExplorer:
                 self.send_goal(frontier)
                 rospy.loginfo('Moving to frontier')
                 start_time = rospy.Time.now()
-                timeout_duration = rospy.Duration(15)  # 15-second timeout
+                timeout_duration = rospy.Duration(CaveExplorer.TIME_OUT_MAX)  # 15-second timeout
                 
                 # Monitor goal progress
                 while not rospy.is_shutdown():

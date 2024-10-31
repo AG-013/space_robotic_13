@@ -45,15 +45,10 @@ class ArtefactLocator:
         
         # Now wait for the transform
         rospy.loginfo("Waiting for transform from map to base_link")
-        start_time = rospy.Time.now()
-        while not rospy.is_shutdown():
-            if self.tf_listener_.canTransform("map", "base_link", rospy.Time(0.)):
-                break
-            if (rospy.Time.now() - start_time).to_sec() > self.TRANSFORM_TIMEOUT:
-                raise RuntimeError("Transform timeout - SLAM node not available")
+        while not rospy.is_shutdown() and not self.tf_listener_.canTransform("map", "base_link", rospy.Time(0)):
             rospy.sleep(0.1)
-            rospy.logwarn_throttle(1, "Waiting for transform... Have you launched a SLAM node?")
-        rospy.loginfo('Accepted, node is running')
+            rospy.loginfo("Waiting for transform... Have you launched a SLAM node?")        
+        rospy.loginfo("Accepted, node is running")   
 
         # Initialize YOLO model
         self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
