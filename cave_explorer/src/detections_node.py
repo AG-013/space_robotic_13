@@ -31,7 +31,7 @@ from helper_functions import *
 
 class ArtefactLocator:
     CONFIDENCE_THRESHOLD = 0.65
-    ARTIFACT_DISTANCE_THRESHOLD = 8.5
+    ARTIFACT_DISTANCE_THRESHOLD = 11
     TRANSFORM_TIMEOUT = 10.0  # seconds
     MIN_BOX_WIDTH = 50  # Minimum width threshold in pixels
 

@@ -35,8 +35,8 @@ class CaveExplorer:
         self.MAP_HEIGHT = 896
         self.MIN_CLUSTER_POINTS = 50
         self.INTENSITY_THRESHOLD = 10
-        self.LENGTH_WEIGHT = 5.0
-        self.DIST_WEIGHT = 2.2
+        self.LENGTH_WEIGHT = 1.4
+        self.DIST_WEIGHT = 2
 
         self.occupancy_grid = None
         self.goal_counter_ = 0
@@ -124,6 +124,7 @@ class CaveExplorer:
             if not self.chosen_frontier_pose:
                 rospy.logwarn('No frontier selected.')
                 self.exploration_state_ = PlannerType.EXPLORED_MAP
+                return
             else:
                 rospy.loginfo('Frontier selected')
             self.exploration_state_ = PlannerType.MOVING_TO_FRONTIER
@@ -252,7 +253,7 @@ class CaveExplorer:
         (avg_x, avg_y), n = group
         distance = math.hypot((current_position.x - avg_x), (current_position.y - avg_y))
         # Distance should be > 1, Length should be < 1
-        cost = self.DIST_WEIGHT * (distance**5) - (self.LENGTH_WEIGHT**2) * n
+        cost = self.DIST_WEIGHT * (distance) - (self.LENGTH_WEIGHT) * n
 
         return cost
     ########################################################################################################################################################################################################
