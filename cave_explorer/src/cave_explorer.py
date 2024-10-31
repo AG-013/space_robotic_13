@@ -35,18 +35,14 @@ class CaveExplorer:
         self.MAP_HEIGHT = 896
         self.MIN_CLUSTER_POINTS = 50
         self.INTENSITY_THRESHOLD = 10
-        self.LENGTH_WEIGHT = 1
-        self.DIST_WEIGHT = 1
+        self.LENGTH_WEIGHT = 5.0
+        self.DIST_WEIGHT = 2.2
 
         self.occupancy_grid = None
         self.goal_counter_ = 0
-        self.exploration_done_ = False
         self.exploration_state_ = PlannerType.WAITING_FOR_MAP
-        self.visited_frontiers = set()    
-
 
         self.chosen_frontier_pose = None
-        
         
         rospy.loginfo("Waiting for transform from map to base_link")
         self.tf_listener_ = tf.TransformListener()
@@ -104,9 +100,9 @@ class CaveExplorer:
                 self.artefact_x_y = coords
                 rospy.loginfo(f"NEW: Found artifact at X: {self.artefact_x_y[0]:.2f}, Y: {self.artefact_x_y[1]:.2f}, Theta: {self.artefact_x_y[2]:.2f}")
                 self.exploration_state_ = PlannerType.OBJECT_IDENTIFIED_SCAN
-    ###################################################################################################################### 
+    ##################################################################################################################################################################
 
-
+    # MAIN LOOP AND EXPLORATION PLANNER ##################################################################################################################################
     def main_loop(self):
         while not rospy.is_shutdown():
             action_state = self.move_base_action_client_.get_state()
@@ -115,7 +111,8 @@ class CaveExplorer:
             rospy.sleep(0.1)
 
 
-    def exploration_planner(self, action_state):
+
+    def exploration_planner(self, action_state): 
         if self.exploration_state_ == PlannerType.WAITING_FOR_MAP:
             self.handle_waiting_for_map()
             
@@ -149,6 +146,7 @@ class CaveExplorer:
         elif self.exploration_state_ == PlannerType.OBJECT_IDENTIFIED_SCAN:
             rospy.loginfo("Object identified.")
             self.object_identified_scan()
+    ################################################################################################################################################################################
 
 
     def handle_waiting_for_map(self):
@@ -159,6 +157,7 @@ class CaveExplorer:
         self.exploration_state_ = PlannerType.SELECTING_FRONTIER
 
 
+    # OPTIMUM FRONTIER ALGORITHMS ##########################################################################################################################################################
     def find_frontiers(self):
         frontier_points = []
         for y in range(self.MAP_HEIGHT):
@@ -200,70 +199,100 @@ class CaveExplorer:
                 self.average_and_size_frontier_points.append(((avg_x, avg_y), n))
 
 
+    # def find_min_frontier(self):
+    #     # Find the closest frontier cluster
+    #     robot_pose = self.get_pose_2d()
+    #     target = []
+    #     min_cost = float('inf')
+    #     for group in self.average_and_size_frontier_points:
+    #         cost = self.group_cost(robot_pose, group)
+    #         #print("Cost ", cost)
+    #         if cost < min_cost:
+    #             min_cost = cost
+    #             (x, y), n = group
+    #             target = (x, y)
+
+    #     pose_2d = Pose2D()
+    #     # Origin Point is 10, 10, and Map Resolution is 0.1
+    #     pose_2d.x = target[0] * 0.1 - 10
+    #     pose_2d.y = target[1] * 0.1 - 10
+    #     pose_2d.theta = random.uniform(0, 2*math.pi)
+
+    #     self.chosen_frontier_pose = pose_2d
     def find_min_frontier(self):
         # Find the closest frontier cluster
         robot_pose = self.get_pose_2d()
+        if robot_pose is None:
+            rospy.logerr("Could not get robot pose, skipping frontier selection")
+            self.chosen_frontier_pose = None
+            return
+
         target = []
         min_cost = float('inf')
         for group in self.average_and_size_frontier_points:
             cost = self.group_cost(robot_pose, group)
-            #print("Cost ", cost)
             if cost < min_cost:
                 min_cost = cost
                 (x, y), n = group
                 target = (x, y)
 
-        pose_2d = Pose2D()
-        # Origin Point is 10, 10, and Map Resolution is 0.1
-        pose_2d.x = target[0] * 0.1 - 10
-        pose_2d.y = target[1] * 0.1 - 10
-        pose_2d.theta = random.uniform(0, 2*math.pi)
+        if not target:
+            self.chosen_frontier_pose = None
+            return
 
-        self.chosen_frontier_pose = pose_2d
+        # Create the Pose2D message properly
+        self.chosen_frontier_pose = Pose2D(
+            x=target[0] * 0.1 - 10,
+            y=target[1] * 0.1 - 10,
+            theta=random.uniform(0, 2*math.pi)
+        )
 
 
     def group_cost(self, current_position, group):
         (avg_x, avg_y), n = group
         distance = math.hypot((current_position.x - avg_x), (current_position.y - avg_y))
         # Distance should be > 1, Length should be < 1
-        cost = self.DIST_WEIGHT * distance + self.LENGTH_WEIGHT * n
+        cost = self.DIST_WEIGHT * (distance**5) - (self.LENGTH_WEIGHT**2) * n
 
         return cost
+    ########################################################################################################################################################################################################
 
-
+    # MOVING TO FRONTIER ###########################################################################################################################################################################
     def handle_moving_to_frontier(self, action_state):
         
         self.send_goal_Pose(self.chosen_frontier_pose)
         
-        if self.exploration_state_ != PlannerType.OBJECT_IDENTIFIED_SCAN:
-            try:
-                rospy.loginfo('Moving to frontier')
-                start_time = rospy.Time.now()
-                timeout_duration = rospy.Duration(CaveExplorer.TIME_OUT_MAX)
+        try:
+            rospy.loginfo('Moving to frontier')
+            start_time = rospy.Time.now()
+            timeout_duration = rospy.Duration(CaveExplorer.TIME_OUT_MAX)
 
-                while not rospy.is_shutdown():
-                    if rospy.Time.now() - start_time >= timeout_duration:
-                        rospy.loginfo("Goal timeout reached")
-                        self.move_base_action_client_.cancel_goal()
-                        self.exploration_state_ = PlannerType.WAITING_FOR_MAP
-                        break
+            while not rospy.is_shutdown():
+                if self.exploration_state_ == PlannerType.OBJECT_IDENTIFIED_SCAN:
+                    # CANCEL GOAL
+                    self.move_base_action_client_.cancel_goal()
+                    break
+                if rospy.Time.now() - start_time >= timeout_duration:
+                    rospy.loginfo("Goal timeout reached")
+                    self.move_base_action_client_.cancel_goal()
+                    self.exploration_state_ = PlannerType.WAITING_FOR_MAP
+                    break
 
-                    action_state = self.move_base_action_client_.get_state()
-                    if action_state == actionlib.GoalStatus.SUCCEEDED:
-                        rospy.loginfo("Frontier goal reached")
-                        self.exploration_state_ = PlannerType.SELECTING_FRONTIER
-                        break
-                    elif action_state in [actionlib.GoalStatus.PREEMPTED, actionlib.GoalStatus.ABORTED]:
-                        rospy.logwarn("Goal aborted or preempted")
-                        self.exploration_state_ = PlannerType.HANDLE_REJECTED_FRONTIER
-                        break
-                    rospy.sleep(0.1)
-            except Exception as e:
-                rospy.logerr(f"Exception while moving to frontier: {e}")
+                action_state = self.move_base_action_client_.get_state()
+                if action_state == actionlib.GoalStatus.SUCCEEDED:
+                    rospy.loginfo("Frontier goal reached")
+                    self.exploration_state_ = PlannerType.SELECTING_FRONTIER
+                    break
+                elif action_state in [actionlib.GoalStatus.PREEMPTED, actionlib.GoalStatus.ABORTED]:
+                    rospy.logwarn("Goal aborted or preempted")
+                    self.exploration_state_ = PlannerType.HANDLE_REJECTED_FRONTIER
+                    break
+                rospy.sleep(0.1)
+        except Exception as e:
+            rospy.logerr(f"Exception while moving to frontier: {e}")
 
 
     def object_identified_scan(self):
-        
         # Move to the Location  ###################################################################
         # First Modify so that robot doesn't move all the way to the coordinate, with an offset
         self.offset_coordinates()
@@ -277,40 +306,89 @@ class CaveExplorer:
             # rospy.loginfo(f'Moving to Artefact Location, x:{self.artefact_x_y[0]} y:{self.artefact_x_y[1]}')
             rospy.sleep(0.2)
             
-            if action_state in {actionlib.GoalStatus.REJECTED,
-                                actionlib.GoalStatus.ABORTED,
-                                actionlib.GoalStatus.PREEMPTED}:
+            if action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED, actionlib.GoalStatus.PREEMPTED}:
                 rospy.logerr(f"Goal failed with state: {action_state}, RETRYING!!!!!!!!!!!!")
                 return
                 
-
             action_state = self.move_base_action_client_.get_state()
         #############################################################################################
         
         # NEXT STATE ################################################################################
         self.exploration_state_ = PlannerType.SELECTING_FRONTIER
         #############################################################################################
+        
+        
+    def offset_coordinates(self):
+        # Modify the coordinates to move a specified distance away from the target artifact.
+        x, y, theta_target = self.artefact_x_y
+        SAFE_DISTANCE = 2.75  # Metres away from the artifact
+        
+        try:
+            # Get current robot position from tf
+            (trans, rot) = self.tf_listener_.lookupTransform('/map', '/base_link', rospy.Time(0))
+            current_x = trans[0]
+            current_y = trans[1]
             
+            # Calculate vector from current position to artifact
+            dx = x - current_x
+            dy = y - current_y
             
+            # Calculate angle to artifact
+            angle_to_artifact = math.atan2(dy, dx)
+            
+            # Calculate offset position
+            offset_x = x - SAFE_DISTANCE * math.cos(angle_to_artifact)
+            offset_y = y - SAFE_DISTANCE * math.sin(angle_to_artifact)
+            
+            # Update artifact coordinates with offset position and original orientation
+            self.artefact_x_y = (offset_x, offset_y, theta_target)
+            
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
+            rospy.logwarn(f"Could not get transform from map to base_link: {str(e)}")
+            # If we can't get the transform, just offset in the direction of theta_target
+            offset_x = x - SAFE_DISTANCE * math.cos(theta_target)
+            offset_y = y - SAFE_DISTANCE * math.sin(theta_target)
+            self.artefact_x_y = (offset_x, offset_y, theta_target)
+    ################################################################################################################################################
+         
+         
+    # SEND GOALS & GET POSE ########################################################################################################################
+    # def get_pose_2d(self):
+    #     # Lookup the latest transform
+    #     (trans,rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+
+    #     # Return a Pose2D message
+    #     pose = Pose2D()
+    #     pose.x = trans[0]
+    #     pose.y = trans[1]
+    #     qw = rot[3]
+    #     qz = rot[2]
+
+    #     if qz >= 0.:
+    #         pose.theta = wrap_angle(2. * math.acos(qw))
+    #     else: 
+    #         pose.theta = wrap_angle(-2. * math.acos(qw))
+
+    #     return pose
     def get_pose_2d(self):
         # Lookup the latest transform
-        (trans,rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+        try:
+            (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+            
+            # Create and return a Pose2D message
+            pose = Pose2D()
+            # Use the proper message constructor method
+            return Pose2D(
+                x=trans[0],
+                y=trans[1],
+                theta=wrap_angle(2. * math.acos(rot[3]) if rot[2] >= 0. else -2. * math.acos(rot[3]))
+            )
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
+            rospy.logerr(f"Failed to get transform: {e}")
+            return None
 
-        # Return a Pose2D message
-        pose = Pose2D()
-        pose.x = trans[0]
-        pose.y = trans[1]
-        qw = rot[3]
-        qz = rot[2]
-
-        if qz >= 0.:
-            pose.theta = wrap_angle(2. * math.acos(qw))
-        else: 
-            pose.theta = wrap_angle(-2. * math.acos(qw))
-
-        return pose
          
-                
+    
     def send_goal(self, frontier):
         
         map_resolution = self.current_map_.info.resolution
@@ -337,24 +415,40 @@ class CaveExplorer:
         self.move_base_action_client_.send_goal(action_goal.goal)
         
         
+    # def send_goal_simple(self, coordinate):
+    #     pose_2d = Pose2D
+    #     pose_2d.x = coordinate[0]
+    #     pose_2d.y = coordinate[1]
+    #     pose_2d.theta = coordinate[2]
+    #     # print(f'x:{pose_2d.x} , y:{pose_2d.y}')
+
+    #     # Send a goal to "move_base" with "self.move_base_action_client_"
+    #     action_goal = MoveBaseActionGoal()
+
+    #     action_goal.goal.target_pose.header.frame_id = "map"
+    #     action_goal.goal_id = self.goal_counter_
+    #     self.goal_counter_ = self.goal_counter_ + 1
+    #     action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
+
+    #     # sending the goal to move base
+    #     self.move_base_action_client_.send_goal(action_goal.goal)
     def send_goal_simple(self, coordinate):
-        pose_2d = Pose2D
-        pose_2d.x = coordinate[0]
-        pose_2d.y = coordinate[1]
-        pose_2d.theta = coordinate[2]
-        # print(f'x:{pose_2d.x} , y:{pose_2d.y}')
+        # Create the Pose2D message properly
+        pose_2d = Pose2D(
+            x=coordinate[0],
+            y=coordinate[1],
+            theta=coordinate[2]
+        )
 
         # Send a goal to "move_base" with "self.move_base_action_client_"
         action_goal = MoveBaseActionGoal()
-
         action_goal.goal.target_pose.header.frame_id = "map"
-        action_goal.goal_id = self.goal_counter_
-        self.goal_counter_ = self.goal_counter_ + 1
+        action_goal.goal_id.id = str(self.goal_counter_)
+        self.goal_counter_ += 1
         action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
 
         # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
-
 
     def send_goal_Pose(self, target_pose):
         # Send a goal to "move_base" with "self.move_base_action_client_"
@@ -367,7 +461,27 @@ class CaveExplorer:
 
         # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
+        
+    def send_goal(self, frontier):
+        x, y = frontier
+        # Create the Pose2D message properly
+        pose_2d = Pose2D(
+            x=x * self.current_map_.info.resolution + self.current_map_.info.origin.position.x,
+            y=y * self.current_map_.info.resolution + self.current_map_.info.origin.position.y,
+            theta=math.pi/2
+        )
 
+        # Send a goal to "move_base" with "self.move_base_action_client_"
+        action_goal = MoveBaseActionGoal()
+        action_goal.goal.target_pose.header.frame_id = "map"
+        action_goal.goal_id.id = str(self.goal_counter_)
+        self.goal_counter_ += 1
+        action_goal.goal.target_pose.pose = pose2d_to_pose(pose_2d)
+
+        # sending the goal to move base
+        self.move_base_action_client_.send_goal(action_goal.goal)
+############################################################################################################################################
+                
                 
 if __name__ == '__main__':
     # Create the ROS node

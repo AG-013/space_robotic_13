@@ -31,9 +31,9 @@ from helper_functions import *
 
 class ArtefactLocator:
     CONFIDENCE_THRESHOLD = 0.65
-    ARTIFACT_DISTANCE_THRESHOLD = 7.5
+    ARTIFACT_DISTANCE_THRESHOLD = 8.5
     TRANSFORM_TIMEOUT = 10.0  # seconds
-    MIN_BOX_WIDTH = 75  # Minimum width threshold in pixels
+    MIN_BOX_WIDTH = 50  # Minimum width threshold in pixels
 
     
     def __init__(self):
@@ -99,15 +99,95 @@ class ArtefactLocator:
         return response
         
 
+    # def image_callback(self, image_msg):
+    #     classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
+        
+    #     try:
+    #         # Convert the ROS image message to a CV2 image
+    #         cv_image = self.cv_bridge_.imgmsg_to_cv2(image_msg, "bgr8")
+    #     except CvBridgeError as e:
+    #         rospy.logerr(f"CvBridge Error: {e}")
+    #         return
+
+    #     # Process the image using YOLO
+    #     results = self.model_(cv_image, device=self.device_, imgsz=(480, 384), verbose=False)
+
+    #     # Draw bounding boxes on the image
+    #     for result in results:
+    #         boxes = result.boxes
+    #         for box in boxes:
+    #             confidence = box.conf[0].item()  # Confidence score
+                
+    #             # Only process boxes with confidence above the threshold
+    #             if confidence >= ArtefactLocator.CONFIDENCE_THRESHOLD:
+    #                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+    #                 box_width = x2 - x1
+                    
+    #                 # Skip processing if box width is too small
+    #                 if box_width < ArtefactLocator.MIN_BOX_WIDTH:
+    #                     continue
+                    
+    #                 class_id = int(box.cls.item())  # Get the class ID from the tensor
+    #                 label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
+                    
+    #                 # Calculate and print center point of the bounding box
+    #                 center_x = (x1 + x2) // 2
+    #                 center_y = (y1 + y2) // 2
+                    
+    #                 # Get the 3D coordinates
+    #                 art_xyz = self.get_posed_3d(center_x, center_y)
+                    
+    #                 if art_xyz is not None:
+    #                     # Draw rectangle and label
+    #                     cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    #                     cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    #                     cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
+                        
+    #                     if class_id == 1 or class_id == 4:  # Mineral or Mushroom
+    #                         artefact_list = self.mineral_artefacts if class_id == 1 else self.mushroom_artefacts
+    #                         already_exists = any(
+    #                             math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) <= ArtefactLocator.ARTIFACT_DISTANCE_THRESHOLD 
+    #                             for artefact in artefact_list
+    #                         )
+                            
+    #                         if not already_exists:
+    #                             rounded_x = round(art_xyz[0], 2)
+    #                             rounded_y = round(art_xyz[1], 2)
+                                
+    #                             # Calculate Theta
+    #                             pose_2d = self.get_pose_2d()
+    #                             target_theta = math.atan2(rounded_y - pose_2d.y, rounded_x - pose_2d.x)
+    #                             target_theta = wrap_angle(target_theta)
+    #                             rounded_target_theta = round(target_theta, 2)
+                                
+    #                             point_msg = Point(rounded_x, rounded_y, rounded_target_theta)
+    #                             self.latest_artifact_point = point_msg
+    #                             artefact_list.append(art_xyz)
+    #                 else:
+    #                     # Draw rectangle and label in red for invalid 3D coordinates
+    #                     cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+    #                     cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    #     # Convert the modified CV2 image back to a ROS Image message
+    #     try:
+    #         processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
+    #     except CvBridgeError as e:
+    #         rospy.logerr(f"CvBridge Error: {e}")
+    #         return
+
+    #     # Publish the processed image
+    #     self.image_pub_.publish(processed_msg)
     def image_callback(self, image_msg):
         classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
-        
+
         try:
             # Convert the ROS image message to a CV2 image
             cv_image = self.cv_bridge_.imgmsg_to_cv2(image_msg, "bgr8")
         except CvBridgeError as e:
             rospy.logerr(f"CvBridge Error: {e}")
             return
+
+        image_width = cv_image.shape[1]  # Get the width of the image
 
         # Process the image using YOLO
         results = self.model_(cv_image, device=self.device_, imgsz=(480, 384), verbose=False)
@@ -117,49 +197,53 @@ class ArtefactLocator:
             boxes = result.boxes
             for box in boxes:
                 confidence = box.conf[0].item()  # Confidence score
-                
+
                 # Only process boxes with confidence above the threshold
                 if confidence >= ArtefactLocator.CONFIDENCE_THRESHOLD:
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                     box_width = x2 - x1
-                    
+
                     # Skip processing if box width is too small
                     if box_width < ArtefactLocator.MIN_BOX_WIDTH:
                         continue
-                    
-                    class_id = int(box.cls.item())  # Get the class ID from the tensor
-                    label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
-                    
-                    # Calculate and print center point of the bounding box
+
+                    # Calculate center point of the bounding box
                     center_x = (x1 + x2) // 2
                     center_y = (y1 + y2) // 2
-                    
+
+                    # Skip if the center point is too far left or right of the image
+                    if center_x < 0.1 * image_width or center_x > 0.9 * image_width:
+                        continue
+
+                    class_id = int(box.cls.item())  # Get the class ID from the tensor
+                    label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
+
                     # Get the 3D coordinates
                     art_xyz = self.get_posed_3d(center_x, center_y)
-                    
+
                     if art_xyz is not None:
                         # Draw rectangle and label
                         cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
-                        
+
                         if class_id == 1 or class_id == 4:  # Mineral or Mushroom
                             artefact_list = self.mineral_artefacts if class_id == 1 else self.mushroom_artefacts
                             already_exists = any(
-                                math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) <= ArtefactLocator.ARTIFACT_DISTANCE_THRESHOLD 
+                                math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) <= ArtefactLocator.ARTIFACT_DISTANCE_THRESHOLD
                                 for artefact in artefact_list
                             )
-                            
+
                             if not already_exists:
                                 rounded_x = round(art_xyz[0], 2)
                                 rounded_y = round(art_xyz[1], 2)
-                                
+
                                 # Calculate Theta
                                 pose_2d = self.get_pose_2d()
                                 target_theta = math.atan2(rounded_y - pose_2d.y, rounded_x - pose_2d.x)
                                 target_theta = wrap_angle(target_theta)
                                 rounded_target_theta = round(target_theta, 2)
-                                
+
                                 point_msg = Point(rounded_x, rounded_y, rounded_target_theta)
                                 self.latest_artifact_point = point_msg
                                 artefact_list.append(art_xyz)
@@ -177,7 +261,7 @@ class ArtefactLocator:
 
         # Publish the processed image
         self.image_pub_.publish(processed_msg)
-        
+
         
     def get_pose_2d(self):
         # Lookup the latest transform
