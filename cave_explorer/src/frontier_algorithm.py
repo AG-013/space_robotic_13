@@ -9,19 +9,8 @@ import actionlib
 from sklearn.cluster import DBSCAN
 
 
-MAP_WIDTH = 896
-MAP_HEIGHT = 896
-MIN_CLUSTER_POINTS = 50
-INTENSITY_THRESHOLD = 10
-LENGTH_WEIGHT = 1
-DIST_WEIGHT = 1
 
-self.occupancy_grid = None
-
-
-def map_callback(self, msg):
-    self.occupancy_grid = msg.data
-    frontier_points = self.find_frontiers(10)
+frontier_points = self.find_frontiers()
 
 
 # GROUPING POINTS ##############################################################################
@@ -84,7 +73,7 @@ def group_frontiers(self, frontier_points, eps=1.0, min_samples=2):
 
     # Calculate average points for each group
     self.average_and_size_frontier_points = []
-    for points in enumerate(self.frontier_groups):
+    for points in self.frontier_groups:
         n = len(points)
         if n > MIN_CLUSTER_POINTS:  # Checks if the group has more than 50 points
             # Calculate the average x and y
@@ -104,10 +93,11 @@ def planner_move_to_frontier(self, action_state):
         target = []
         min_cost = float('inf')
         for group in self.average_and_size_frontier_points:
-            cost, x, y = self.group_cost(robot_pose, group)
+            cost= self.group_cost(robot_pose, group)
             #print("Cost ", cost)
             if cost < min_cost:
                 min_cost = cost
+                (x, y), n = group
                 target = (x, y)
 
         pose_2d = Pose2D()
