@@ -393,7 +393,7 @@ class CaveExplorer:
     def offset_coordinates(self):
         # Modify the coordinates to move a specified distance away from the target artifact.
         x, y, theta_target = self.artefact_x_y
-        SAFE_DISTANCE = 2.75  # 3 meters away from the artifact
+        SAFE_DISTANCE = 2.75  # Metres away from the artifact
         
         try:
             # Get current robot position from tf
