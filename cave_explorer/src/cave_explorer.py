@@ -12,11 +12,11 @@ from spatialmath import SE3
 import math
 import numpy as np
 
-# Machine Learning / OpenCV Modules
-import cv2  # OpenCV2
-import torch
-from ultralytics import YOLO
-from cv_bridge import CvBridge, CvBridgeError
+# # Machine Learning / OpenCV Modules
+# import cv2  # OpenCV2
+# import torch
+# from ultralytics import YOLO
+# from cv_bridge import CvBridge, CvBridgeError
 
 # ROS Modules
 import tf
@@ -29,19 +29,12 @@ import tf
 import actionlib
 import rospy
 import roslib
+from collections import deque
+import heapq
+
 
 
 class PlannerType(Enum):
-    ERROR = 0
-    MOVE_FORWARDS = 1
-    RETURN_HOME = 2
-    GO_TO_FIRST_ARTIFACT = 3
-    RANDOM_WALK = 4
-    RANDOM_GOAL = 5
-    EXPLORATION = 6
-
-
-class ExplorationsState(Enum):
     ERROR = 0
     WAITING_FOR_MAP = 1
     IDENTIFYING_FRONTIERS = 2
@@ -55,43 +48,16 @@ class ExplorationsState(Enum):
 
 
 class CaveExplorer:
+    
     def __init__(self):
-        # Initialize YOLO model for object detection
-        self.device_ = "cuda" if torch.cuda.is_available() else "cpu"
-        path = os.path.abspath(__file__)
-        src_dir = os.path.dirname(path)
-        parent_dir = os.path.abspath(os.path.join(src_dir, '..', '..'))
-        model_path = os.path.join(parent_dir, 'cam_assist/src/test_train/yolov11s_trained_optimized.pt')
-        self.model_ = YOLO(model_path)
-        rospy.loginfo(f"Using YOLO model on device: {self.device_}")
-
-        # Depth and scan data handling
-        self.depth_data_ = None
-        self.base_2_depth_cam = SE3(0.5, 0, 0.9) @ SE3(0.005, 0.028, 0.013)
-        self.scan_lock = threading.Lock()
-        self.map_lock = threading.Lock()
-        self.image_lock = threading.Lock()
-        self.odom_lock = threading.Lock()
-
 
         self.current_map_ = None
-        self.image_data = None
 
         # Variables/Flags for planning
-        self.planner_type_ = PlannerType.ERROR
-        self.goal_counter_ = 0
+        self.goal_counter_ = 0  # Unique ID for each goal sent to move_base
         self.exploration_done_ = False
-        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        self.exploration_state_ = PlannerType.WAITING_FOR_MAP
         self.visited_frontiers = set()
-
-        # Initialize CvBridge for image processing
-        self.cv_bridge_ = CvBridge()
-        
-        # Variables/Flags for perception
-        self.localised_ = False
-        self.artifact_found_ = False
-        self.artefact_list = []
-        self.art_xyz = None
 
         # Wait for the transform from map to base_link
         rospy.loginfo("Waiting for transform from map to base_link")
@@ -102,328 +68,360 @@ class CaveExplorer:
             rospy.logwarn("Waiting for transform... Have you launched a SLAM node?")
 
         # Subscribers
-        self.image_sub_ = rospy.Subscriber("/camera/rgb/image_raw", Image, self.image_callback, queue_size=1)
-        self.depth_sub_ = rospy.Subscriber("/camera/depth/points", PointCloud2, self.depth_callback, queue_size=1)
-        
         self.map_sub_ = rospy.Subscriber("/map", OccupancyGrid, self.map_callback, queue_size=1)
-
-        # Publishers
-        self.cmd_vel_pub_ = rospy.Publisher('cmd_vel', Twist, queue_size=1)
-        self.image_pub_ = rospy.Publisher("/detections_image", Image, queue_size=5)
-        # self.marker_pub = rospy.Publisher('/visualization_marker', Marker, queue_size=10)  # Artifact markers
-
+        
         # Action client for move_base
         self.move_base_action_client_ = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         rospy.loginfo("Waiting for move_base action...")
         self.move_base_action_client_.wait_for_server()
-        rospy.loginfo("move_base connected")
-
-        # Start the image processing thread
-        self.image_thread = threading.Thread(target=self.process_image_continuously)
-        self.image_thread.start()
-
-        # Start the exploration thread
-        self.exploration_thread = threading.Thread(target=self.exploration_loop)
-        self.exploration_thread.start()
-
-
-
-    def get_pose_2d(self):
-
-        # Lookup the latest transform
-        (trans,rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
-
-        # Return a Pose2D message
-        pose = Pose2D()
-        pose.x = trans[0]
-        pose.y = trans[1]
-
-        qw = rot[3]
-        qz = rot[2]
-
-        if qz >= 0.:
-            pose.theta = self.wrap_angle(2. * math.acos(qw))
-        else: 
-            pose.theta = self.wrap_angle(-2. * math.acos(qw))
-
-        print("pose: ", pose)
-
-        return pose
-
-
-    def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
-        # Check if depth data is available
-        if not self.depth_data_:
-            rospy.logwarn("Depth message not received yet!")
-            return None
-
-        # Get current robot pose transformation from 'map' to 'base_link'
-        (trans, rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
-        x, y, z = trans
-        qz = rot[2]
-        qw = rot[3]
-
-        # Calculate theta based on quaternion values
-        theta = self.wrap_angle(2.0 * math.acos(qw)) if qz >= 0.0 else self.wrap_angle(-2.0 * math.acos(qw))
-
-        # Create robot pose transformation using SE3
-        robot_pos = SE3(x, y, z) @ SE3.Rz(theta)  # Using Rz for 2D rotation instead of full RPY rotation
-
-        # Extract point from depth data using pixel coordinates
-        point = list(point_cloud2.read_points(
-            self.depth_data_,
-            field_names=("x", "y", "z"),
-            skip_nans=True,
-            uvs=[(pixel_x, pixel_y)]
-        ))
-
-        if point:
-            # Convert point from camera optical frame to robot base frame
-            old_x, old_y, old_z = point[0]
-            
-            # Transform from camera optical frame to camera frame (Realsense camera)
-            x = old_z
-            y = -old_x
-            z = -old_y
-
-            # Create point transformation
-            point_transform = SE3.Trans(x, y, z)
-            point_in_world = robot_pos @ self.base_2_depth_cam @ point_transform
-
-            # Extract the translation components (t) from the final transformation
-            return point_in_world.t  # .t extracts the translational component as a tuple (x, y, z)
-
-        return None
-
-    
-    # Callback functions with locks #######################################################
-    def image_callback(self, image_msg):
-        with self.image_lock:
-            self.image_data = image_msg
-            
-    def depth_callback(self, depth_msg):
-        with self.scan_lock:
-            self.depth_data_ = depth_msg
-
-    def map_callback(self, map_msg):
-        with self.map_lock:
-            if self.current_map_ is None or self.current_map_.header.stamp != map_msg.header.stamp:
-                rospy.loginfo("Map updated")
-                self.current_map_ = map_msg
+        rospy.loginfo("move_base connected")        
                 
-    # Image processing thread ############################################################
-    def process_image_continuously(self):
+        
+    # Callbacks ###################################################################################################
+    def map_callback(self, map_msg):
+        self.current_map_ = map_msg
+        rospy.sleep(0.2)
+    ####################################################################################################################
+    
+    
+    def main_loop(self):
+
         while not rospy.is_shutdown():
-            with self.image_lock:
-                if self.image_data:
-                    self.process_image()
+
+            # Get the current status, possible statuses here: https://docs.ros.org/en/noetic/api/actionlib_msgs/html/msg/GoalStatus.html
+            action_state = self.move_base_action_client_.get_state()
+            # rospy.loginfo('action state: ' + self.move_base_action_client_.get_goal_status_text())
+            # rospy.loginfo('action_state number:' + str(action_state))
+    
+            # Execute the planner by calling the relevant method - methods send a goal to "move_base" with "self.move_base_action_client_", Add your own planners here!
+            print("Current State:", self.exploration_state_.name)
+            self.exploration_planner(self.exploration_state_)
+
+            # Delay so the loop doesn't run too fast
             rospy.sleep(0.1)
 
-    def process_image(self):
-        try:
-            classes = ["Alien", "Mineral", "Orb", "Ice", "Mushroom", "Stop Sign"]
 
-            cv_image = self.cv_bridge_.imgmsg_to_cv2(self.image_data, "bgr8")
-            # Perform image detection or processing here (e.g., YOLO, feature detection, etc.)
+################ CHANGE STATES FUNCTIONING HIGH LEVEL ############################################################################################################
+    def exploration_planner(self, action_state):
 
-            # Process the image using YOLO
-            # print('------------------------------------------------------------')
-            # print('USING CUDA:', self.device_)
-            # print('------------------------------------------------------------')
-            results = self.model_(cv_image, device=self.device_, imgsz=(480, 384))
+        if action_state != actionlib.GoalStatus.ACTIVE:
+            print('Exploration planner ............')
 
-            
-            # 
-            mineral_artefacts = []
-            mushroom_artefacts = []
-            
-            # Draw bounding boxes on the image
-            for result in results:
-                boxes = result.boxes
-                for box in boxes:
-                    confidence = box.conf[0].item()  # Confidence score
+            if self.exploration_state_ == PlannerType.WAITING_FOR_MAP:
+                self.handle_waiting_for_map()
 
-                    # Only process boxes with confidence above the threshold
-                    confidence_threshold = 0.5
-                    if confidence >= confidence_threshold:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        class_id = int(box.cls.item())  # Get the class ID from the tensor
-                        label = f'{classes[class_id]} {confidence:.2f}'  # Class name and confidence
+            elif self.exploration_state_ == PlannerType.SELECTING_FRONTIER or self.exploration_state_ == PlannerType.HANDLE_REJECTED_FRONTIER:
+                self.handle_selecting_frontier()
 
-                        # Calculate and print center point of the bounding box
-                        center_x = (x1 + x2) // 2
-                        center_y = (y1 + y2) // 2
-                        # rospy.loginfo(f"Center of {classes[class_id]}: ({center_x}, {center_y})")
+            elif self.exploration_state_ == PlannerType.MOVING_TO_FRONTIER:
+                print('entering ....MOVING TO frontiers')
+                self.handle_moving_to_frontier(action_state)
 
-                        # Get the 3D coordinates
-                        self.art_xyz = self.get_posed_3d(center_x, center_y)
+            elif self.exploration_state_ == PlannerType.HANDLE_TIMEOUT:
+                print('entering ....HANDLE TIMEOUT')
+                self.handle_timeout()
 
-                        # Check if art_xyz is None before accessing its elements
-                        if self.art_xyz is not None:
-                            # Draw rectangle and label
-                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            cv2.circle(cv_image, (center_x, center_y), 5, (0, 0, 255), -1)
+            elif self.exploration_state_ == PlannerType.EXPLORED_MAP:
+                rospy.loginfo("Exploration completed successfully.")
 
-                            # Detecting Mineral and Mushroom
-                            if class_id == 1 or class_id == 4:
-                                if class_id == 1:
-                                    self.artefact_list = mineral_artefacts
-                                else:
-                                    self.artefact_list = mushroom_artefacts
-                                    
-                                    self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
-                                
-                                # Check if it doesn't already exist
-                                already_exists = False
-                                _art_art_dist_threshold = 7  # Minimum distance threshold between artefacts
-                                for artefact in self.artefact_list:
-                                    if self.is_artifact_far_enough(artefact, self.art_xyz, _art_art_dist_threshold):
-                                        continue
-                                    else:
-                                        already_exists = True
-                                        break
-
-                                if not already_exists:
-                                    self.artefact_list.append(self.art_xyz)
-                        else:
-                            # Draw rectangle and label with warning color (red)
-                            cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                            cv2.putText(cv_image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                            rospy.sleep(0.5)
-                            # rospy.logwarn("Could not retrieve 3D coordinates.")
-                
-            # Publish processed image
-            processed_msg = self.cv_bridge_.cv2_to_imgmsg(cv_image, "bgr8")
-            self.image_pub_.publish(processed_msg)
-        except CvBridgeError as e:
-            rospy.logerr(f"CvBridge Error: {e}")
-        except Exception as e:
-            rospy.logerr(f"Unexpected error: {e}")
-            
-            
-    def is_artifact_far_enough(self , artefact, art_xyz, threshold):
-        return math.hypot(artefact[0] - art_xyz[0], artefact[1] - art_xyz[1]) > threshold
-
-    # Exploration planning thread #########################################################
-    def exploration_loop(self):
-        while not rospy.is_shutdown():
-            self.main_loop()
-            rospy.sleep(0.5)
-
+            elif self.exploration_state_ == PlannerType.OBJECT_IDENTIFIED_SCAN:
+                rospy.loginfo("Object identified.")
+                self.object_identified_scan()
+               
+ ##############################################################################################################################################################################    
+     
     def handle_waiting_for_map(self):
-        print ( 'waiting for map.....')
         while self.current_map_ is None:
             rospy.logwarn("Map not available yet, waiting for map...")
-            rospy.sleep(1.0)  # Wait for the map to be received
-            continue  # Keep waiting until the map is received
-        else:
-            current_map = self.current_map_
-            rospy.loginfo("Map acquired!")
-            self.exploration_state_ = ExplorationsState.IDENTIFYING_FRONTIERS
-            print ( 'state changed to identifying frontiers')
-    
-
-    def handle_identifying_frontiers(self):
-        print ( 'identifying frontiers,,,,,')
-        frontiers = self.identify_frontiers(self.current_map_)
-        if not frontiers:
+            rospy.sleep(0.5)  # Wait for the map to be received
+        self.exploration_state_ = PlannerType.SELECTING_FRONTIER
+                
             
-            # change to no valid frontiers found
-            
-            rospy.loginfo('No frontiers found!')
-            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
-        else:
-            self.exploration_state_ = ExplorationsState.SELECTING_FRONTIER
-            
-
     def handle_selecting_frontier(self):
-        print ( ' frontiers found selecting frontiers')
-        self.selected_frontier = None
-        frontiers = self.identify_frontiers(self.current_map_)
-        rospy.loginfo(f'Frontiers: {len(frontiers)}')
-        rospy.loginfo(f'Frontiers after min dist select: {len(frontiers)}')
-        self.selected_frontier = self.select_nearest_frontier(frontiers)
-        if self.selected_frontier is None:
+        
+        frontiers , visited = self.identify_frontiers(self.current_map_)
+        # print ( ' visited:__checks ::', visited)
+        print ( ' visited set : ' , len(self.visited_frontiers))
+
+        if not frontiers:
+            rospy.logwarn('No frontiers found.')
+            self.exploration_state_ = PlannerType.EXPLORED_MAP
+            return
+        
+        # filter out frontiers too close
+        print  (' frontiers:', len(frontiers) )
+        filtered_frontier = [f for f in frontiers if self.is_valid_frntr(f)]
+
+        # Calculate cost for each frontier and sort them
+        # print ('filtered frontiers lenght:', len(filtered_frontier))
+        # print ('filtered frontiers 1st set:', filtered_frontier[0][:4])
+        # print ('filtered frontiers 2nd set:', filtered_frontier[1][:4])
+        # print ('filtered frontiers 3rd set:', filtered_frontier[2][:4])
+
+        frontier_costs = [(frontier, self.frontier_cost(frontier)) for frontier in filtered_frontier if frontier is not None and len(frontier) > 5]
+        print('frontier costs:', len(frontier_costs))
+        
+        # filtering out the invalid frontiers and inf cost frontiers    
+        
+        valid_frontier_costs = [(f,c) for f,c in frontier_costs if np.isscalar(c) and not np.isnan(c) and not np.isinf(c)]
+        
+        print('valid frontier costs:', len(valid_frontier_costs))
+        
+        if not valid_frontier_costs:
+            rospy.logwarn('No valid frontiers found.')
+            self.exploration_state_ = PlannerType.EXPLORED_MAP
+            return
+        
+        # Sort the frontiers based on cost
+        print('valid frontier costs:', valid_frontier_costs[0][1])
+        sorted_frontiers = heapq.nsmallest(len(frontier_costs), frontier_costs, key=lambda x: x[1])
+        print('sorted frontiers:', len(sorted_frontiers))
+        print('sorted frontiers:', sorted_frontiers[0])
+        # Select the frontier with the lowest cost
+        self.selected_frontier = [frontier for frontier, cost in sorted_frontiers]
+        print ('selected frontier:', len(self.selected_frontier))
+        if not self.selected_frontier:
             rospy.logwarn('No frontier selected.')
-            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
+            self.exploration_state_ = PlannerType.EXPLORED_MAP
         else:
-            
             rospy.loginfo('Frontier selected')
-            self.exploration_state_ = ExplorationsState.MOVING_TO_FRONTIER
+            self.exploration_state_ = PlannerType.MOVING_TO_FRONTIER
+
+    # As robot moves to the frontier, it will check object detection - if object detected, it will stop and move towards the object, Implement logic for changing planner to object detection
+    def handle_moving_to_frontier(self, action_state):        
+        # Ensure there is a selected frontier to attempt
+        while self.selected_frontier:
+            # Take the current frontier to move towards
+            frontier = self.selected_frontier[0]
+            print('frontier:', frontier)
+            
+            centroud_frntr = np.mean(frontier, axis=0).astype(int)
+
+            # Check if the current frontier is already visited
+            if tuple(centroud_frntr) in self.visited_frontiers:
+            #     # Remove the visited frontier and continue with the next one
+                if self.selected_frontier:
+                    self.selected_frontier.pop(0)
+                continue
+            
+            # # Add this frontier to visited and remove it from the selected list
+            # removed_frontier = self.selected_frontier.pop(0)
+            # self.visited_frontiers.add(tuple(removed_frontier))
+
+            # Attempt to move to the selected frontier
+            self.move_to_frontier(centroud_frntr)
+            rospy.loginfo('Moving to frontier')
+            start_time = rospy.Time.now()
+            
+            self.visited_frontiers.add(tuple(centroud_frntr))
+            
+            if self.selected_frontier is not None:
+                self.selected_frontier.pop(0)
+                
+            # Continuously check the state while moving toward the goal
+            while rospy.Time.now() - start_time < rospy.Duration(8):  # 10-second timeout
+                action_state = self.move_base_action_client_.get_state()
+
+                # Check if the goal has been reached successfully
+                if action_state == actionlib.GoalStatus.SUCCEEDED:
+                    rospy.loginfo("Successfully reached the frontier!")
+                    self.exploration_state_ = PlannerType.WAITING_FOR_MAP
+                    return  # Stop processing further frontiers in this call
+
+                # Check if the goal was rejected or aborted
+                elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
+                    rospy.loginfo("Goal rejected or aborted.")
+                    self.exploration_state_ = PlannerType.HANDLE_REJECTED_FRONTIER
+                    break  # Break out of the inner loop to attempt the next frontier
+                
+            # If the loop ends due to timeout, handle the timeout case
+            if rospy.Time.now() - start_time >= rospy.Duration(8):
+                rospy.loginfo("Timeout reached.")
+                self.exploration_state_ = PlannerType.WAITING_FOR_MAP
+                break  # Stop processing further frontiers in this call
+
+        # Check if no more frontiers are available
+        if not self.selected_frontier:
+            rospy.loginfo("No more frontiers to explore.")
+            self.exploration_state_ = PlannerType.EXPLORED_MAP
+            
             
     def handle_timeout(self):
-        rospy.loginfo("Timeout reached.")
-        self.current_map_ = None
-        self.selected_frontier = None
-        self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
+        rospy.loginfo("@ handle_timeout")
+        self.exploration_state_ = PlannerType.WAITING_FOR_MAP
         
-                                        
-    def identify_frontiers(self, current_map): 
-        frontiers = []
+       
+       
+############# FRONTIER BASED FUNCTIONS ##############################################################################################################       
+    def identify_frontiers(self, current_map):
+        frontiers = [] # empty so each loop they are re calculated
        # Extract map dimensions and data
-        width =current_map.info.width
-        height =current_map.info.height
-        data =current_map.data  # Occupancy grid data
-        origin = current_map.info.origin.position
-        resolution = current_map.info.resolution
-        
+        width = current_map.info.width
+        height = current_map.info.height
+
         map_array = np.array(current_map.data).reshape((height, width))
+        visited = np.zeros_like(map_array, dtype=bool) # same size array as map_array with bool flags
 
         for i in range(height):
             for j in range(width):
-                if map_array[i, j] == 0:  # Free space
-                    neighbors = self.get_neighbors(i, j, map_array)
-                    for n in neighbors:
-                        
-                        if map_array[n[0], n[1]] == -1:  # Unknown space
-                            frontiers.append((i, j))
-                            break
+                    # checking if cell is visited and is frontier
+                if self.is_frontier(map_array, i, j) and not visited[i, j]:
+                    
+                    # print ( ' frontier found at:', i, j)
+                     # cheking to separate the frontiers
+                    frontier = self.bfs_frontier(map_array, i, j, visited)
+                    if frontier:
+                        # check if it is in visited
+                        # print ( ' new frontier set:', len(frontier))
+                        frontier_cntr = tuple(np.mean(frontier, axis=0).astype(int))
+                        if frontier_cntr not in self.visited_frontiers:
+                            frontiers.append(frontier)
+        return frontiers , visited
+
+
+    def is_frontier(self, map_array , i , j):
+        # Check if the cell is a free cell
+        if map_array[i, j] != 0:
+            return False
         
-        return frontiers
-
-
+        # check if the cell has an unknown cell as neighbor
+        neighbors = self.get_neighbors(i, j, map_array)
+        
+        for ni, nj in neighbors:
+            if map_array[ni, nj] == -1:
+                return True
+        return False
+                
+    def bfs_frontier(self, map_array, i, j, visited):
+        
+        # if (i, j) in visited:
+        #     return []
+        
+        queue = deque([(i, j)])   # frontier queue
+        frontier = []             # frontier list
+        
+        while queue:
+            i, j = queue.popleft()
+            # cell = i, j
+            if visited[i, j]:
+                continue
+                        
+            visited[i, j] = True # mark as visited
+            
+            #check if the cell is frontier
+            if self.is_frontier(map_array, i, j):
+                frontier.append([i, j])
+                
+            # All unvisited neighbors of the queue cell
+            
+            for ni, nj in self.get_neighbors(i, j, map_array):
+                if not visited[ni, nj] and map_array[ni, nj] == 0:
+                    queue.append((ni, nj))
+                    
+        return frontier if frontier else None                       
+                        
+                        
     def get_neighbors(self, row, col, map_array):
         neighbors = []
         height, width = map_array.shape
-        if row > 0: neighbors.append((row-1, col))
-        if row < height-1: neighbors.append((row+1, col))
-        if col > 0: neighbors.append((row, col-1))
-        if col < width-1: neighbors.append((row, col+1))
-        return neighbors
-  
-    
-    def select_nearest_frontier(self, frontiers):
-        return self.merge_close_frontiers_to_one(frontiers)
-    
-    
-    def merge_close_frontiers_to_one(self, frontiers):
-        merged_frontiers = []
-        threshold_distance = 50  # Distance threshold to consider frontiers as close
-
-        while frontiers:
-            # Select a random frontier
-            random_frontier = random.choice(frontiers)
-            frontiers.remove(random_frontier)
-
-            # Find close frontiers to the selected random frontier
-            close_frontiers = [random_frontier]
-            for frontier in frontiers[:]:
-                if self.compute_distance_between_points(random_frontier, frontier) < threshold_distance:
-                    close_frontiers.append(frontier)
-                    frontiers.remove(frontier)
-
-            # Merge the close frontiers into one
-            if close_frontiers:
-                avg_x = sum(f[0] for f in close_frontiers) / len(close_frontiers)
-                avg_y = sum(f[1] for f in close_frontiers) / len(close_frontiers)
-                merged_frontiers.append([avg_x, avg_y])
-
-        return merged_frontiers
         
-    def compute_distance_between_points(self , point1, point2):
-        return np.hypot((point1[0] - point2[0]), (point1[1] - point2[1]))
-    def wrap_angle(self , angle):
+        if row > 0:         neighbors.append((row-1, col))
+        if row < height-1:  neighbors.append((row+1, col))
+        if col > 0:         neighbors.append((row, col-1))
+        if col < width-1:   neighbors.append((row, col+1))
+        # print('neighbors:', neighbors)
+        return neighbors
+
+#########################
+    def is_valid_frntr (self, frontier) :
+        # min dist threshold for near frnts
+        min_dist = 30
+        for visited_point in self.visited_frontiers:
+            for pt in frontier:
+                dist = np.hypot((pt[0] - visited_point[0]) , (pt[1] - visited_point[1]))
+                if dist < min_dist:
+                    return False
+                    #frontier too close 
+        return True
+                
+    def frontier_cost(self, frontier):
+        
+        if frontier is None or len(frontier) == 0:
+            rospy.logwarn('No frontier found.')
+            return float('inf')
+        
+        distance = self.compute_distance_to_frntr(frontier)
+        size = len(frontier)  # size of the frontier
+        # orientation = self.compute_orn_frn (frontier)
+        
+        l_1 = 0.1
+        l_2 = 0.8
+        l_3 = 0.3
+        
+        cost = l_1 * distance + l_2 * size  #l_3 * orientation
+        return cost
+
+    def compute_distance_to_frntr(self, frontier):
+        # Ensure that frontier contains multiple points
+        if len(frontier) < 2:
+            # rospy.logwarn("Frontier does not contain enough points, assuming single point frontier.")
+            frontier_cntr = frontier[0]  # Take the single point directly
+        else:
+             # Validate that all elements in frontier are coordinate pairs
+            valid_frontier = [pt for pt in frontier if len(pt) == 2]
+            if not valid_frontier:
+                rospy.logerr("Invalid frontier detected. No valid coordinate pairs found.")
+                return float('inf')  # Return a high distance to ignore this invalid frontier
+            # Calculate the centroid of the frontier
+            frontier_cntr = np.mean(valid_frontier, axis=0).astype(int)
+        
+        map_res = self.current_map_.info.resolution
+        map_origin = self.current_map_.info.origin.position
+        
+        current_position = self.get_pose_2d()
+        
+        # Calculate the real-world coordinates of the frontier centroid
+        frontier_x = frontier_cntr[0] * map_res + map_origin.x
+        frontier_y = frontier_cntr[1] * map_res + map_origin.y
+        
+        # Compute the Euclidean distance from the robot's current position to the frontier centroid
+        distance = np.hypot((frontier_x - current_position.x), (frontier_y - current_position.y))
+        
+        return distance
+         
+    def compute_orn_frn(self, frontier):
+        """
+        Calculate the orientation cost of a given frontier.
+        """
+        # Get the map properties
+        map_res = self.current_map_.info.resolution
+        map_origin = self.current_map_.info.origin.position
+
+        # Assuming frontier is a collection of cells (x, y)
+        total_orientation = 0
+        for cell in frontier:
+            # Validate that cell is a coordinate pair (x, y)
+            if not isinstance(cell, (list, tuple)) or len(cell) != 2:
+                rospy.logwarn(f"Unexpected cell format: {cell}. Skipping...")
+                continue
+
+            frontier_x = cell[0] * map_res + map_origin.x
+            frontier_y = cell[1] * map_res + map_origin.y
+
+            # Compute the angle/orientation of this frontier cell with respect to the robot's current position
+            robot_pose = self.get_pose_2d()
+            angle_to_cell = math.atan2(frontier_y - robot_pose.y, frontier_x - robot_pose.x)
+            
+            # Calculate the relative orientation cost (custom logic, modify as needed)
+            orientation_diff = abs(angle_to_cell - robot_pose.theta)
+            total_orientation += orientation_diff
+
+        # Calculate an average orientation if there are multiple cells
+        avg_orientation = total_orientation / len(frontier) if frontier else 0
+
+        return avg_orientation
+                
+    def wrap_angle(self, angle):
         # Function to wrap an angle between 0 and 2*Pi
         while angle < 0.0:
             angle = angle + 2 * math.pi
@@ -432,9 +430,8 @@ class CaveExplorer:
             angle = angle - 2 * math.pi
 
         return angle
-
-
-    def pose2d_to_pose(self ,pose_2d):
+ 
+    def pose2d_to_pose(self , pose_2d):
         pose = Pose()
 
         pose.position.x = pose_2d.x
@@ -445,19 +442,19 @@ class CaveExplorer:
 
         return pose
 
-    def move_to_frontier(self, frontier):
+    def move_to_frontier(self, centroud_frntr):
+        
         map_resolution = self.current_map_.info.resolution
         map_origin = self.current_map_.info.origin.position
-        # send first selected frontier to move_base and remove it from
-        # till all the frontiers are sent to move_base
-        x , y = frontier
-            # Send a goal to move_base to explore the selected frontier
-        pose_2d = Pose2D
-            # Move forward 10m
-        pose_2d.x = x*map_resolution +map_origin.x
+        # send first selected frontier to move_base and remove it from, till all the frontiers are sent to move_base
+        x, y = centroud_frntr
+        # Send a goal to move_base to explore the selected frontier
+        pose_2d = Pose2D()
+        # Move forward 10m
+        pose_2d.x = x * map_resolution + map_origin.x
         pose_2d.y = y * map_resolution + map_origin.y
         pose_2d.theta = math.pi/2
-        print (f'x:{pose_2d.x} , y:{pose_2d.y}')
+        print(f'x:{pose_2d.x} , y:{pose_2d.y}')
 
         # Send a goal to "move_base" with "self.move_base_action_client_"
         action_goal = MoveBaseActionGoal()
@@ -465,232 +462,41 @@ class CaveExplorer:
         action_goal.goal_id = self.goal_counter_
         self.goal_counter_ = self.goal_counter_ + 1
         action_goal.goal.target_pose.pose = self.pose2d_to_pose(pose_2d)
-            
+
         # sending the goal to move base
         self.move_base_action_client_.send_goal(action_goal.goal)
- 
- 
-    def handle_moving_to_frontier(self, action_state):
+
+           
+    def object_identified_scan(self):
+        # Stop the robot
+        # twist = Twist()
+        # self.cmd_vel_pub_.publish(twist)
+        self.exploration_state_ = PlannerType.WAITING_FOR_MAP
+    
+    def get_pose_2d(self):
+        # Lookup the latest transform
+        (trans,rot) = self.tf_listener_.lookupTransform('map', 'base_link', rospy.Time(0))
+
+        # Return a Pose2D message
+        pose = Pose2D()
+        pose.x = trans[0]
+        pose.y = trans[1]
+        qw = rot[3]
+        qz = rot[2]
+
+        if qz >= 0.:
+            pose.theta = self.wrap_angle(2. * math.acos(qw))
+        else: 
+            pose.theta = self.wrap_angle(-2. * math.acos(qw))
+
+        return pose
+       
         
-         # Ensure there is a selected frontier to attempt
-        if not self.selected_frontier:
-            rospy.loginfo("No frontiers to move to.")
-            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
-            return
-        while self.selected_frontier:
-            # Take the current frontier to move towards
-            frontier = self.selected_frontier[0]
-
-            # Check if the current frontier is already visited
-            if tuple(frontier) in self.visited_frontiers:
-                # Remove the visited frontier and continue with the next one
-                self.selected_frontier.pop(0)
-                continue
-
-            # Attempt to move to the selected frontier
-            self.move_to_frontier(frontier)
-            rospy.loginfo('Moving to frontier')
-            start_time = rospy.Time.now()
-            
-            # Add this frontier to visited and remove it from the selected list
-            removed_frontier = self.selected_frontier.pop(0)
-            self.visited_frontiers.add(tuple(removed_frontier))
-
-            # Continuously check the state while moving toward the goal
-            while rospy.Time.now() - start_time < rospy.Duration(15):  # 10-second timeout
-                action_state = self.move_base_action_client_.get_state()
-                
-                # Check if the goal has been reached successfully
-                if action_state == actionlib.GoalStatus.SUCCEEDED:
-                    rospy.loginfo("Successfully reached the frontier!")
-                    self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-                    return  # Stop processing further frontiers in this call
-
-                # Check if the goal was rejected or aborted
-                elif action_state in {actionlib.GoalStatus.REJECTED, actionlib.GoalStatus.ABORTED}:
-                    rospy.loginfo("Goal rejected or aborted.")
-                    self.exploration_state_ = ExplorationsState.HANDLE_REJECTED_FRONTIER
-                    break  # Break out of the inner loop to attempt the next frontier
-                
-                # Check if the object has been identified
-                elif self.art_xyz is not None:
-                    # change action state to object identified
-                    self.exploration_state_ = ExplorationsState.OBJECT_IDENTIFIED_SCAN
-                    rospy.loginfo("Object identified, stopping exploration.")
-                    return
-                                            
-                # If the loop ends due to timeout, handle the timeout case
-            if rospy.Time.now() - start_time >= rospy.Duration(15):
-                rospy.loginfo("Timeout reached.")
-                self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-                break  # Stop processing further frontiers in this call
-
-            # Check if no more frontiers are available
-        if not self.selected_frontier:
-            rospy.loginfo("No more frontiers to explore.")
-            self.exploration_state_ = ExplorationsState.EXPLORED_MAP
-                    
-        return
-       
-       
-    def object_identified_scan(self, action_state):
-        # Ensure the object coordinates (x, y, theta) are initialized
-        x_obj = None
-        y_obj = None
-        theta_obj = None
-        delta_x = float('inf')
-        delta_y = float('inf')
-        delta_theta = float('inf')
-
-         # Stop the robot by publishing a zero velocity Twist message
-        stop_twist = Twist()
-        stop_twist.linear.x = 0.0
-        stop_twist.linear.y = 0.0
-        stop_twist.linear.z = 0.0
-        stop_twist.angular.x = 0.0
-        stop_twist.angular.y = 0.0
-        stop_twist.angular.z = 0.0
-
-        print("Sending stop command...")
-        self.cmd_vel_pub_.publish(stop_twist)  # Publish stop message
-
-
-        # Check if detected object coordinates are available
-        if self.art_xyz is not None:
-            # Extract the object coordinates
-            x_obj = self.art_xyz[0]
-            y_obj = self.art_xyz[1]
-            theta_obj = math.atan2(y_obj, x_obj)  # Default orientation, adjust if necessary
-
-            # Log and print the identified object position
-            print(f"[DEBUG] Object found at x: {x_obj}, y: {y_obj}, theta: {theta_obj} ----------")
-            
-            # Adding tolerance to the object position
-            pos_tolerance = 0.5
-            theta_tolerance = 0.3
-            print(f"[DEBUG] Tolerance levels -> Position: {pos_tolerance}, Theta: {theta_tolerance}")
-
-            # Calculate the difference from the previous goal if available
-            if hasattr(self, 'last_goal') and self.last_goal is not None:
-                delta_x = abs(x_obj - self.last_goal[0])
-                delta_y = abs(y_obj - self.last_goal[1])
-                delta_theta = abs(theta_obj - self.last_goal[2])
-                print(f"[DEBUG] Delta values -> Delta_x: {delta_x}, Delta_y: {delta_y}, Delta_theta: {delta_theta}")
-            else:
-                print("[DEBUG] No previous goal available to calculate deltas.")
-
-            # If the difference is within tolerance, do not send a new goal
-            if delta_x < pos_tolerance and delta_y < pos_tolerance and delta_theta < theta_tolerance:
-                rospy.loginfo("[DEBUG] Object position change within tolerance, not sending a new goal.")
-                self.exploration_state_ = ExplorationsState.WAITING_FOR_MAP
-                return
-
-            # Create and populate a MoveBaseGoal message to move to the identified object
-            action_goal = MoveBaseActionGoal()
-            action_goal.goal.target_pose.header.frame_id = "map"
-            action_goal.goal.target_pose.header.stamp = rospy.Time.now()
-
-            # Set the goal's position and orientation
-            action_goal.goal.target_pose.pose.position.x = x_obj
-            action_goal.goal.target_pose.pose.position.y = y_obj
-            action_goal.goal.target_pose.pose.position.z = 0.0  # Since we're working in 2D
-
-            # Calculate the orientation quaternion from theta
-            quaternion = tf.transformations.quaternion_from_euler(0, 0, theta_obj)
-            action_goal.goal.target_pose.pose.orientation = Quaternion(*quaternion)
-
-            # Send the goal to move_base
-            rospy.loginfo("[DEBUG] Sending goal to move_base with coordinates (x: {}, y: {}, theta: {})".format(
-                x_obj, y_obj, theta_obj))
-            self.move_base_action_client_.send_goal(action_goal.goal)
-            
-            # Save the current goal as the last goal
-            self.last_goal = (x_obj, y_obj, theta_obj)
-            print(f"[DEBUG] Last goal saved as -> x: {x_obj}, y: {y_obj}, theta: {theta_obj}")
-
-  
-    def exploration_planner(self, action_state):
-        if action_state != actionlib.GoalStatus.ACTIVE:
-            print('Exploration planner ............')
-            if self.exploration_state_ == ExplorationsState.WAITING_FOR_MAP:
-                print ( 'enteringg .... waiting for map')
-                self.handle_waiting_for_map()
-
-            elif self.exploration_state_ == ExplorationsState.IDENTIFYING_FRONTIERS:
-                print ( 'entering ....IDENTifying frontiers')
-                self.handle_identifying_frontiers()
-
-            elif self.exploration_state_ == ExplorationsState.SELECTING_FRONTIER:
-                print ( 'entering ....SELECTING frontiers')
-                self.handle_selecting_frontier()
-
-            elif self.exploration_state_ == ExplorationsState.MOVING_TO_FRONTIER:
-                print ( 'entering ....MOVING TO frontiers')
-                self.handle_moving_to_frontier(action_state)
-
-            elif self.exploration_state_ == ExplorationsState.HANDLE_REJECTED_FRONTIER:
-                print ( 'entering ....HANDLE REJECTED frontiers')
-                self.handle_selecting_frontier()
-                
-            elif self.exploration_state_ == ExplorationsState.HANDLE_TIMEOUT:
-                print ( 'entering ....HANDLE TIMEOUT')
-                self.handle_timeout()
-
-            elif self.exploration_state_ == ExplorationsState.EXPLORED_MAP:
-                rospy.loginfo("Exploration completed successfully.")
-                
-            elif self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN:
-                rospy.loginfo("Object planner started checkkiiiiiiiiiiiiiiiiiiiiiiing ............")
-                self.object_identified_scan(action_state )
-
-       
-    def main_loop(self):
-
-        while not rospy.is_shutdown():
-
-            #######################################################
-            # Get the current status
-            # See the possible statuses here: https://docs.ros.org/en/noetic/api/actionlib_msgs/html/msg/GoalStatus.html
-            action_state = self.move_base_action_client_.get_state()
-            rospy.loginfo('action state: ' + self.move_base_action_client_.get_goal_status_text())
-            rospy.loginfo('action_state number:' + str(action_state))
-            
-            if (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.SUCCEEDED):
-                print("Successfully explored!")
-                # if frontiers 
-                #     self.exploration_done_ = True
-            elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE):
-                print("Exploration preempted!")
-                self.exploration_done_ = False
-                action_state = actionlib.GoalStatus.PREEMPTING
-            elif (self.planner_type_ == PlannerType.EXPLORATION) and (action_state == actionlib.GoalStatus.ACTIVE) and (self.exploration_state_ == ExplorationsState.OBJECT_IDENTIFIED_SCAN):
-                print (' moving to object  ')
-                self.exploration_done_= False
-                ## put in change state and call object scan 
-
-            #######################################################
-            # Select the next planner to execute - Update this logic as you see fit!
-            if not self.exploration_done_:
-                self.planner_type_ = PlannerType.EXPLORATION
-
-            #######################################################
-            # Execute the planner by calling the relevant method - methods send a goal to "move_base" with "self.move_base_action_client_"
-            # Add your own planners here!
-            print("Calling planner:", self.planner_type_.name)
-            if self.planner_type_ == PlannerType.EXPLORATION: 
-                self.exploration_planner(action_state)
-
-            #######################################################
-            # Delay so the loop doesn't run too fast
-            rospy.sleep(0.5)
-
-
-
 if __name__ == '__main__':
+    # Create the ROS node
     rospy.init_node('cave_explorer')
-
-    # Create the cave explorer instance
+    # Create the cave explorer
     cave_explorer = CaveExplorer()
-
-    # Keep the node running
-    rospy.spin()
+    # Loop forever while processing callbacks
+    cave_explorer.main_loop()
+    
