@@ -25,8 +25,8 @@ class CaveExplorer:
     TIME_OUT_MAX = 27.5
     MAP_WIDTH = 896
     MAP_HEIGHT = 896
-    MIN_CLUSTER_POINTS = 50
-    INTENSITY_THRESHOLD = 10
+    MIN_CLUSTER_POINTS = 40
+    INTENSITY_THRESHOLD = 15
     LENGTH_WEIGHT = 1.4
     DIST_WEIGHT = 2
     SAFE_DISTANCE = 2.75  # Metres away from the artifact
@@ -167,7 +167,11 @@ class CaveExplorer:
         return frontier_points
 
     def has_unknown_neighbor(self, x, y):
-        neighbors = [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+        neighbors = [(x - 1, y),
+                     (x + 1, y),
+                     (x, y - 1),
+                     (x, y + 1)]
+        
         for nx, ny in neighbors:
             if 0 <= nx < CaveExplorer.MAP_WIDTH and 0 <= ny < CaveExplorer.MAP_HEIGHT:
                 index = ny * CaveExplorer.MAP_WIDTH + nx
@@ -223,12 +227,26 @@ class CaveExplorer:
                                             theta=random.uniform(0, 2*math.pi))
 
 
+    # def group_cost(self, current_position, group):
+    #     (avg_x, avg_y), n = group
+    #     distance = math.hypot((current_position.x - avg_x), (current_position.y - avg_y))
+    #     # Distance should be > 1, Length should be < 1
+    #     # cost = CaveExplorer.DIST_WEIGHT * (distance**4) - (CaveExplorer.LENGTH_WEIGHT) * n
+    #     cost = CaveExplorer.DIST_WEIGHT * (distance**4) - (CaveExplorer.LENGTH_WEIGHT) * (n ** 2)
+    #     return cost
+    
     def group_cost(self, current_position, group):
         (avg_x, avg_y), n = group
-        distance = math.hypot((current_position.x - avg_x), (current_position.y - avg_y))
-        # Distance should be > 1, Length should be < 1
-        cost = CaveExplorer.DIST_WEIGHT * (distance) - (CaveExplorer.LENGTH_WEIGHT) * n
-
+        # Convert grid coordinates to map frame
+        frontier_x = avg_x * CaveExplorer.MAP_RESOLUTION - CaveExplorer.MAP_ORIGIN_X
+        frontier_y = avg_y * CaveExplorer.MAP_RESOLUTION - CaveExplorer.MAP_ORIGIN_Y
+        
+        # Now both points are in meters in the map frame
+        distance = math.hypot(  (current_position.x - frontier_x), 
+                                (current_position.y - frontier_y))
+        
+        cost = ((CaveExplorer.DIST_WEIGHT * distance)**4) - (CaveExplorer.LENGTH_WEIGHT) * (n ** 2)
+        
         return cost
     ########################################################################################################################################################################################################
 

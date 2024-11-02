@@ -31,7 +31,7 @@ class ArtefactLocator:
     CONFIDENCE_THRESHOLD = 0.85
     ARTIFACT_DISTANCE_THRESHOLD = 10
     TRANSFORM_TIMEOUT = 10.0  # seconds
-    MIN_BOX_WIDTH = 50  # Minimum width threshold in pixels
+    MIN_BOX_WIDTH = 75  # Minimum width threshold in pixels
 
     
     def __init__(self):
