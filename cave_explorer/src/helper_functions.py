@@ -1,6 +1,5 @@
 import math
 from geometry_msgs.msg import Pose
-import numpy as np
 
 
 def wrap_angle(angle):
