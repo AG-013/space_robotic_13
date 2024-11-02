@@ -329,10 +329,9 @@ class CaveExplorer:
         self.exploration_state_ = PlannerType.SELECTING_FRONTIER
         #############################################################################################
         
-        
+
+    # Modify the coordinates to move a specified distance away from the target artifact.        
     def offset_coordinates(self):
-        # Modify the coordinates to move a specified distance away from the target artifact.
-        # x, y, theta_target = self.artefact_x_y
         x = self.artefact_x_y.x
         y = self.artefact_x_y.y
         theta_target = self.artefact_x_y.theta
