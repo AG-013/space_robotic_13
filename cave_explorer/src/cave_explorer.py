@@ -162,11 +162,11 @@ class CaveExplorer:
         for y in range(CaveExplorer.MAP_HEIGHT):
             for x in range(CaveExplorer.MAP_WIDTH):
                 value = self.occupancy_grid[y * CaveExplorer.MAP_WIDTH + x]
-                if 0 <= value <= CaveExplorer.INTENSITY_THRESHOLD and self.has_unknown_neighbor(x, y):
+                if 0 <= value <= CaveExplorer.INTENSITY_THRESHOLD and self.is_on_edge(x, y):
                     frontier_points.append((x, y))
         return frontier_points
 
-    def has_unknown_neighbor(self, x, y):
+    def is_on_edge(self, x, y):
         neighbors = [(x - 1, y),
                      (x + 1, y),
                      (x, y - 1),
@@ -226,15 +226,6 @@ class CaveExplorer:
                                             y=target[1] * CaveExplorer.MAP_RESOLUTION - CaveExplorer.MAP_ORIGIN_Y,
                                             theta=random.uniform(0, 2*math.pi))
 
-
-    # def group_cost(self, current_position, group):
-    #     (avg_x, avg_y), n = group
-    #     distance = math.hypot((current_position.x - avg_x), (current_position.y - avg_y))
-    #     # Distance should be > 1, Length should be < 1
-    #     # cost = CaveExplorer.DIST_WEIGHT * (distance**4) - (CaveExplorer.LENGTH_WEIGHT) * n
-    #     cost = CaveExplorer.DIST_WEIGHT * (distance**4) - (CaveExplorer.LENGTH_WEIGHT) * (n ** 2)
-    #     return cost
-    
     def group_cost(self, current_position, group):
         (avg_x, avg_y), n = group
         # Convert grid coordinates to map frame

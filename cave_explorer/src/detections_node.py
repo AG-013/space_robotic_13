@@ -44,7 +44,7 @@ class ArtefactLocator:
         # Now wait for the transform
         rospy.loginfo("Waiting for transform from map to base_link")
         while not rospy.is_shutdown() and not self.tf_listener_.canTransform("map", "base_link", rospy.Time(0)):
-            rospy.sleep(0.1)
+            rospy.sleep(0.05)
             rospy.loginfo("Waiting for transform... Have you launched a SLAM node?")        
         rospy.loginfo("Accepted, node is running")   
 
@@ -207,7 +207,7 @@ class ArtefactLocator:
             self.depth_data_ = depth_msg
         except Exception as e:
             rospy.logwarn(f"Error in depth callback: {e}")
-        rospy.sleep(0.1)
+        rospy.sleep(0.05)
             
             
     def get_posed_3d(self, pixel_x: int, pixel_y: int) -> tuple:
